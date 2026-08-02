@@ -1,0 +1,46 @@
+# Build outputs
+build/
+**/build/
+out/
+bin/
+.cxx/
+.externalNativeBuild
+/captures
+/Captures
+.artifacts/
+.navigation/
+
+# Gradle
+.gradle/
+local.properties
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDEs & OS
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+
+# Kotlin
+.kotlin/
+kotlin-js-store/
+
+# Build Artifacts
+*.apk
+*.aar
+*.jar
+*.hprof
+/app/release/
+/app/release/baselineProfiles/
+/app/release/output-metadata.json
+
+# Logs & Temp files
+*.log
+*.tmp
+*.swp
+
+# Secrets & Signing
+*.jks
+*.keystore
