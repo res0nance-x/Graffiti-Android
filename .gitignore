@@ -44,4 +44,5 @@ kotlin-js-store/
 # Secrets & Signing
 *.jks
 *.keystore
-app/version.properties
+version.properties
+**/version.properties
