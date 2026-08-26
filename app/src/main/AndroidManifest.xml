@@ -39,7 +39,6 @@
             android:name=".WebViewActivity"
             android:configChanges="orientation|screenSize"
             android:exported="true"
-            android:label="Graffiti Web"
             android:theme="@style/Theme.Graffiti">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
