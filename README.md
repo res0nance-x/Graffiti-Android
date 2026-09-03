@@ -90,13 +90,11 @@ graph TD
 
 ### Detailed Dependency Hierarchy
 
-#### 1. Foundation: [`R3`](file:///d:/IdeaProjects/R3)
-*Path: `d:\IdeaProjects\R3`* | *Build File: [`build.gradle.kts`](file:///d:/IdeaProjects/R3/build.gradle.kts)*
-
+#### 1. Foundation: R3
 `R3` is the base layer providing networking primitives, cryptography, content handling, UPnP port mapping, and lightweight HTTP/WebSocket serving.
 
 * **Embedded/Vendorized Packages**:
-  * `org.nanohttpd.*`: Lightweight HTTP server & WebSocket engine ([`WebServer.kt`](file:///d:/IdeaProjects/R3/src/main/kotlin/r3/http/WebServer.kt)).
+  * `org.nanohttpd.*`: Lightweight HTTP server & WebSocket engine R3/src/main/kotlin/r3/http/WebServer.kt.
   * `r3.org.json.*`: JSON parser and object serialization.
 * **Core Subsystems Provided**:
   * `r3.net`: Socket, IP discovery, and JSON communication.
@@ -107,14 +105,11 @@ graph TD
 
 ---
 
-#### 2. Shared Protocol & Web UI: [`GraffitiCore`](file:///d:/IdeaProjects/GraffitiCore)
-*Path: `d:\IdeaProjects\GraffitiCore`* | *Build File: [`build.gradle.kts`](file:///d:/IdeaProjects/GraffitiCore/build.gradle.kts)*
-
+#### 2. Shared Protocol & Web UI: GraffitiCore
 `GraffitiCore` implements the P2P networking protocols, the REST/HTTP API layer, and houses the cross-platform Web application assets.
 
 * **Web UI & Build Tooling**:
   * Built with TypeScript (ES2022 output) via Gradle task `compileTypescript` (`npx tsc`).
-  * Source located at [`src/main/resources/web`](file:///d:/IdeaProjects/GraffitiCore/src/main/resources/web).
 * **Core Subsystems Provided**:
   * `r3.graffiti.GraffitiP2P`: Mesh peer discovery, ping/pong, challenge-response, content synchronization.
   * `r3.graffiti.GraffitiAPI`: HTTP/JSON REST API serving peer status, identity, messages, and storage.
@@ -122,15 +117,14 @@ graph TD
 
 ---
 
-#### 3. Desktop Application: [`Graffiti (PC)`](file:///d:/IdeaProjects/Graffiti)
-*Path: `d:\IdeaProjects\Graffiti`* | *Build File: [`build.gradle.kts`](file:///d:/IdeaProjects/Graffiti/build.gradle.kts)*
+#### 3. Desktop Application: Graffiti-PC
 
 A standalone Windows desktop application packaged as an app-image using `jpackage`.
 
 * **External Maven Dependencies**:
   * `net.java.dev.jna:jna:5.14.0` (Java Native Access)
   * `net.java.dev.jna:jna-platform:5.14.0` (Windows Win32 platform bindings)
-* **Native Binaries & Bundled Libraries** ([`lib/`](file:///d:/IdeaProjects/Graffiti/lib)):
+* **Native Binaries & Bundled Libraries**:
   * `WebView2Loader.dll`: Microsoft Edge WebView2 runtime loader.
   * `webview.dll`: Native C/C++ WebView wrapper.
   * `FileSelector.exe`: Native Windows file picker helper.
@@ -140,9 +134,7 @@ A standalone Windows desktop application packaged as an app-image using `jpackag
 
 ---
 
-#### 4. Mobile Application: [`Graffiti (Android)`](file:///d:/StudioProjects/Graffiti)
-*Path: `d:\StudioProjects\Graffiti`* | *App Build File: [`app/build.gradle.kts`](file:///d:/StudioProjects/Graffiti/app/build.gradle.kts)*
-
+#### 4. Mobile Application: Graffiti-Android
 An Android application (minSdk 35, targetSdk 37, compileSdk 37) utilizing Jetpack Compose and foreground services.
 
 * **Linkage to `R3` and `GraffitiCore`**:
@@ -152,17 +144,17 @@ An Android application (minSdk 35, targetSdk 37, compileSdk 37) utilizing Jetpac
       getByName("main") {
           java.srcDirs(
               file("src/main/java"),
-              file("D:/IdeaProjects/GraffitiCore/src/main/kotlin"),
-              file("D:/IdeaProjects/R3/src/main/kotlin")
+              file("../GraffitiCore/src/main/kotlin"),
+              file("../R3/src/main/kotlin")
           )
           assets.srcDirs(
               file("src/main/assets"),
-              file("D:/IdeaProjects/GraffitiCore/src/main/resources/web")
+              file("../GraffitiCore/src/main/resources/web")
           )
       }
   }
   ```
-* **External Maven / Jetpack Dependencies** (defined in [`libs.versions.toml`](file:///d:/StudioProjects/Graffiti/gradle/libs.versions.toml)):
+* **External Maven / Jetpack Dependencies**
   * **AndroidX & Architecture**:
     * `androidx.core:core-ktx:1.19.0`
     * `androidx.lifecycle:lifecycle-runtime-ktx:2.11.0`
@@ -179,8 +171,8 @@ An Android application (minSdk 35, targetSdk 37, compileSdk 37) utilizing Jetpac
     * `androidx.test.espresso:espresso-core:3.7.0`
     * `androidx.compose.ui:ui-test-junit4`
 * **Android-Specific Subsystems**:
-  * [`GraffitiService`](file:///d:/StudioProjects/Graffiti/app/src/main/java/r3/graffiti/GraffitiService.kt): Foreground service keeping `GraffitiP2P` and local `WebServer` alive with WiFi locks and notification management.
-  * [`PackMediaPlaybackService`](file:///d:/StudioProjects/Graffiti/app/src/main/java/r3/graffiti/PackMediaPlaybackService.kt): Background playback service for streaming pack media.
-  * [`WebViewActivity`](file:///d:/StudioProjects/Graffiti/app/src/main/java/r3/graffiti/WebViewActivity.kt): Fullscreen WebView rendering `index.html` from assets.
-  * [`PackViewActivity`](file:///d:/StudioProjects/Graffiti/app/src/main/java/r3/graffiti/PackViewActivity.kt): Native Compose UI for inspecting and downloading packs.
-  * [`UriSource`](file:///d:/StudioProjects/Graffiti/app/src/main/java/r3/graffiti/UriSource.kt): Android Storage Access Framework (SAF) adapter for R3 streaming.
+  * Graffiti-Android/app/src/main/java/r3/graffiti/GraffitiService.kt: Foreground service keeping `GraffitiP2P` and local `WebServer` alive with WiFi locks and notification management.
+  * Graffiti-Android/app/src/main/java/r3/graffiti/PackMediaPlaybackService.kt: Background playback service for streaming pack media.
+  * Graffiti-Android/app/src/main/java/r3/graffiti/WebViewActivity.kt: Fullscreen WebView rendering `index.html` from assets.
+  * Graffiti-Android/app/src/main/java/r3/graffiti/PackViewActivity.kt: Native Compose UI for inspecting and downloading packs.
+  * Graffiti-Android/app/src/main/java/r3/graffiti/UriSource.kt: Android Storage Access Framework (SAF) adapter for R3 streaming.
