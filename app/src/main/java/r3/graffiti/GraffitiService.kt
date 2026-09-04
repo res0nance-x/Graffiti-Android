@@ -9,16 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
 import r3.content.Content
+import r3.hash.hash256
 import r3.http.ContentHandler
 import r3.http.HandlerFactory
 import r3.http.WebServer
 import r3.io.log
-import r3.hash.hash256
 import r3.org.json.JSONObject
 import java.io.File
 
@@ -47,7 +46,6 @@ class GraffitiService : Service() {
 
 		@Volatile
 		private var running = false
-		fun isRunning() = running
 
 		@Volatile
 		var port: Int = 0
@@ -62,7 +60,6 @@ class GraffitiService : Service() {
 	private var p2p: GraffitiP2P? = null
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
-
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
@@ -77,13 +74,8 @@ class GraffitiService : Service() {
 		}
 
 		messageCount = 0
-
 		val notification = createNotification()
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-			startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-		} else {
-			startForeground(NOTIFICATION_ID, notification)
-		}
+		startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
 
 		if (multicastLock == null) {
 			try {
@@ -101,12 +93,7 @@ class GraffitiService : Service() {
 		if (wifiLock == null) {
 			try {
 				val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-				val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-					WifiManager.WIFI_MODE_FULL_HIGH_PERF
-				} else {
-					@Suppress("DEPRECATION")
-					WifiManager.WIFI_MODE_FULL
-				}
+				val lockMode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
 				wifiLock = wifiManager.createWifiLock(lockMode, "GraffitiWifiLock").apply {
 					setReferenceCounted(false)
 					acquire()
@@ -159,7 +146,6 @@ class GraffitiService : Service() {
 						if (isEncrypted && password.isNullOrEmpty()) {
 							throw IllegalArgumentException("PASSWORD_REQUIRED")
 						}
-
 						val pack: r3.pack.Pack = if (isEncrypted) {
 							val pass = r3.pke.Password256(password!!.toByteArray().hash256())
 							val sequence = r3.math.EncryptedSequence.createSequence(pass)
@@ -171,21 +157,18 @@ class GraffitiService : Service() {
 
 						try {
 							pack.keys.size
-						} catch (e: Exception) {
+						} catch (_: Exception) {
 							throw IllegalArgumentException("INVALID_PASSWORD")
 						}
 
 						PackHolder.currentPack = pack
 						PackHolder.currentPackName = fileName
-
 						val serviceIntent = Intent(this@GraffitiService, PackMediaPlaybackService::class.java)
 						androidx.core.content.ContextCompat.startForegroundService(this@GraffitiService, serviceIntent)
-
 						val intent = Intent(this@GraffitiService, PackViewActivity::class.java).apply {
 							addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 						}
 						startActivity(intent)
-
 						var port = PackHolder.listeningPort
 						var waitCount = 0
 						while (port == 0 && waitCount < 30) {
@@ -263,17 +246,14 @@ class GraffitiService : Service() {
 	}
 
 	override fun onBind(intent: Intent?): IBinder? = null
-
 	private fun createNotificationChannel() {
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			val serviceChannel = NotificationChannel(
-				CHANNEL_ID,
-				"Graffiti Service Channel",
-				NotificationManager.IMPORTANCE_LOW
-			)
-			val manager = getSystemService(NotificationManager::class.java)
-			manager.createNotificationChannel(serviceChannel)
-		}
+		val serviceChannel = NotificationChannel(
+			CHANNEL_ID,
+			"Graffiti Service Channel",
+			NotificationManager.IMPORTANCE_LOW
+		)
+		val manager = getSystemService(NotificationManager::class.java)
+		manager.createNotificationChannel(serviceChannel)
 	}
 
 	private fun createNotification(): Notification {
@@ -284,7 +264,6 @@ class GraffitiService : Service() {
 			this, 0, stopIntent,
 			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 		)
-
 		val mainActivityIntent = Intent(this, WebViewActivity::class.java)
 		val mainActivityPendingIntent = PendingIntent.getActivity(
 			this, 0, mainActivityIntent,

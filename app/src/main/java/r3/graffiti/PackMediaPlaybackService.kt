@@ -7,11 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
@@ -37,7 +35,6 @@ class PackMediaPlaybackService : Service() {
 	}
 
 	override fun onBind(intent: Intent?): IBinder? = null
-
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
@@ -49,15 +46,10 @@ class PackMediaPlaybackService : Service() {
 			stopSelf()
 			return START_NOT_STICKY
 		}
-
 		val pack = PackHolder.currentPack
 		if (pack != null) {
 			val notification = createNotification()
-			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-				startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-			} else {
-				startForeground(NOTIFICATION_ID, notification)
-			}
+			startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
 			startWebServer(pack)
 		} else {
 			stopSelf()
@@ -76,12 +68,10 @@ class PackMediaPlaybackService : Service() {
 			webServer?.stop()
 		} catch (_: Exception) {
 		}
-
 		val tmpDir = File(cacheDir, "pack_server_tmp")
 		if (!tmpDir.exists()) {
 			tmpDir.mkdirs()
 		}
-
 		val ws = WebServer(null, 0, tmpDir)
 		ws.handlers.add(HandlerFactory.createLogRouter())
 		ws.handlers.add(HandlerFactory.createWelcomeHandler())
@@ -92,7 +82,7 @@ class PackMediaPlaybackService : Service() {
 				try {
 					val bytes = assets.open("playlist/index.html").use { it.readBytes() }
 					BinaryContent(bytes, "index.html", "html")
-				} catch (e: Exception) {
+				} catch (_: Exception) {
 					try {
 						val bytes = assets.open("index.html").use { it.readBytes() }
 						BinaryContent(bytes, "index.html", "html")
@@ -109,15 +99,13 @@ class PackMediaPlaybackService : Service() {
 	}
 
 	private fun createNotificationChannel() {
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			val serviceChannel = NotificationChannel(
-				CHANNEL_ID,
-				"Pack Media Playback Channel",
-				NotificationManager.IMPORTANCE_LOW
-			)
-			val manager = getSystemService(NotificationManager::class.java)
-			manager.createNotificationChannel(serviceChannel)
-		}
+		val serviceChannel = NotificationChannel(
+			CHANNEL_ID,
+			"Pack Media Playback Channel",
+			NotificationManager.IMPORTANCE_LOW
+		)
+		val manager = getSystemService(NotificationManager::class.java)
+		manager.createNotificationChannel(serviceChannel)
 	}
 
 	private fun createNotification(): Notification {
@@ -130,7 +118,6 @@ class PackMediaPlaybackService : Service() {
 			stopIntent,
 			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 		)
-
 		val packName = PackHolder.currentPackName
 
 		return NotificationCompat.Builder(this, CHANNEL_ID)
