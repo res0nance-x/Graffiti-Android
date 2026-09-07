@@ -85,6 +85,8 @@ class WebViewActivity : ComponentActivity() {
 		enableEdgeToEdge()
 		super.onCreate(savedInstanceState)
 
+		SharedFileManager.handleIntent(this, intent)
+
 		requestPermissions()
 		startGraffitiService()
 
@@ -114,6 +116,12 @@ class WebViewActivity : ComponentActivity() {
 				}
 			}
 		})
+	}
+
+	override fun onNewIntent(intent: Intent) {
+		super.onNewIntent(intent)
+		setIntent(intent)
+		SharedFileManager.handleIntent(this, intent)
 	}
 
 	@Composable
