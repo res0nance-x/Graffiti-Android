@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.view.ContextMenu
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
@@ -233,7 +232,6 @@ class WebViewActivity : ComponentActivity() {
 					setDownloadListener { downloadUrl, _, _, _, _ ->
 						triggerSaveAs(downloadUrl)
 					}
-					registerForContextMenu(this)
 					this@WebViewActivity.webView = this
 					loadUrl(url)
 				}
@@ -264,29 +262,6 @@ class WebViewActivity : ComponentActivity() {
 		startService(intent)
 	}
 
-	override fun onCreateContextMenu(menu: ContextMenu?, v: View?, menuInfo: ContextMenu.ContextMenuInfo?) {
-		super.onCreateContextMenu(menu, v, menuInfo)
-		val wv = webView ?: return
-		val result = wv.hitTestResult
-
-		when (result.type) {
-			WebView.HitTestResult.IMAGE_TYPE, WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
-				val url = result.extra ?: return
-				menu?.add("Save image as...")?.setOnMenuItemClickListener {
-					triggerSaveAs(url)
-					true
-				}
-			}
-
-			WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
-				val url = result.extra ?: return
-				menu?.add("Save link as...")?.setOnMenuItemClickListener {
-					triggerSaveAs(url)
-					true
-				}
-			}
-		}
-	}
 
 	private fun triggerSaveAs(url: String) {
 		if (!url.startsWith("http://") && !url.startsWith("https://")) {
