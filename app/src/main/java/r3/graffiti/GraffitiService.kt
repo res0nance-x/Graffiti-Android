@@ -60,9 +60,12 @@ class GraffitiService : Service() {
 	private var p2p: GraffitiP2P? = null
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
+	private var bellPlayer: AndroidBellPlayer? = null
+
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
+		bellPlayer = AndroidBellPlayer(applicationContext)
 	}
 
 	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -184,6 +187,9 @@ class GraffitiService : Service() {
 						}
 						startService(stopIntent)
 					}
+					onBellReceived = { _, sound ->
+						bellPlayer?.play(sound)
+					}
 				}
 				handlers.add(api)
 				handlers.add(AssetRouter(this@GraffitiService))
@@ -202,6 +208,10 @@ class GraffitiService : Service() {
 	}
 
 	private fun cleanup() {
+		try {
+			bellPlayer?.release()
+			bellPlayer = null
+		} catch (_: Exception) {}
 		try {
 			multicastLock?.let {
 				if (it.isHeld) {
