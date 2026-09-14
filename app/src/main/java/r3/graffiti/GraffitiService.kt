@@ -190,6 +190,16 @@ class GraffitiService : Service() {
 					onBellReceived = { _, sound ->
 						bellPlayer?.play(sound)
 					}
+					onGetVersion = {
+						try {
+							val pInfo = packageManager.getPackageInfo(packageName, 0)
+							val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+								.format(java.util.Date(pInfo.lastUpdateTime))
+							"$dateStr (Build ${pInfo.versionName})"
+						} catch (_: Exception) {
+							"Unknown"
+						}
+					}
 				}
 				handlers.add(api)
 				handlers.add(AssetRouter(this@GraffitiService))
