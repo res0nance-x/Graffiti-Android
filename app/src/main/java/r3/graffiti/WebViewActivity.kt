@@ -61,6 +61,15 @@ class WebViewActivity : ComponentActivity() {
 		filePathCallback = null
 	}
 
+	private val multipleFilePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+		if (!uris.isNullOrEmpty()) {
+			filePathCallback?.onReceiveValue(uris.toTypedArray())
+		} else {
+			filePathCallback?.onReceiveValue(null)
+		}
+		filePathCallback = null
+	}
+
 	private val permissionLauncher = registerForActivityResult(
 		ActivityResultContracts.RequestMultiplePermissions()
 	) { _ ->
@@ -185,7 +194,11 @@ class WebViewActivity : ComponentActivity() {
 						): Boolean {
 							this@WebViewActivity.filePathCallback?.onReceiveValue(null)
 							this@WebViewActivity.filePathCallback = filePathCallback
-							filePickerLauncher.launch(arrayOf("*/*"))
+							if (fileChooserParams?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+								multipleFilePickerLauncher.launch(arrayOf("*/*"))
+							} else {
+								filePickerLauncher.launch(arrayOf("*/*"))
+							}
 							return true
 						}
 
