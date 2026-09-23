@@ -38,19 +38,68 @@ object SharedFileManager {
 		val newItems = mutableListOf<SharedItem>()
 
 		if (Intent.ACTION_SEND == action) {
-			val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+			val uri = try {
+				intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+			} catch (_: Exception) {
+				null
+			}
 			val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
 
 			if (uri != null) {
 				newItems.add(createSharedItemFromUri(context, uri, type))
-			} else if (!text.isNullOrBlank()) {
-				newItems.add(SharedItem(text = text))
+			} else {
+				// Fallback: check if sender provided an ArrayList in EXTRA_STREAM with ACTION_SEND
+				val uris = try {
+					intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+				} catch (_: Exception) {
+					null
+				}
+				if (!uris.isNullOrEmpty()) {
+					for (u in uris) {
+						newItems.add(createSharedItemFromUri(context, u, type))
+					}
+				} else if (intent.clipData != null && intent.clipData!!.itemCount > 0) {
+					val clip = intent.clipData!!
+					var foundUri = false
+					for (i in 0 until clip.itemCount) {
+						clip.getItemAt(i).uri?.let { u ->
+							newItems.add(createSharedItemFromUri(context, u, type))
+							foundUri = true
+						}
+					}
+					if (!foundUri && !text.isNullOrBlank()) {
+						newItems.add(SharedItem(text = text))
+					}
+				} else if (!text.isNullOrBlank()) {
+					newItems.add(SharedItem(text = text))
+				}
 			}
 		} else if (Intent.ACTION_SEND_MULTIPLE == action) {
-			val uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-			if (uris != null) {
+			val uris = try {
+				intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+			} catch (_: Exception) {
+				null
+			}
+			if (!uris.isNullOrEmpty()) {
 				for (u in uris) {
 					newItems.add(createSharedItemFromUri(context, u, type))
+				}
+			} else {
+				// Fallback: single uri in EXTRA_STREAM or clipData
+				val uri = try {
+					intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+				} catch (_: Exception) {
+					null
+				}
+				if (uri != null) {
+					newItems.add(createSharedItemFromUri(context, uri, type))
+				} else if (intent.clipData != null && intent.clipData!!.itemCount > 0) {
+					val clip = intent.clipData!!
+					for (i in 0 until clip.itemCount) {
+						clip.getItemAt(i).uri?.let { u ->
+							newItems.add(createSharedItemFromUri(context, u, type))
+						}
+					}
 				}
 			}
 		}
@@ -106,14 +155,16 @@ object SharedFileManager {
 		val appContext = context.applicationContext
 		CoroutineScope(Dispatchers.IO).launch {
 			var port = GraffitiService.port
+			var token = GraffitiService.authToken
 			var retries = 0
-			while (port == 0 && retries < 50) {
+			while ((port == 0 || token == null) && retries < 50) {
 				delay(100)
 				port = GraffitiService.port
+				token = GraffitiService.authToken
 				retries++
 			}
 
-			if (port == 0) {
+			if (port == 0 || token == null) {
 				withContext(Dispatchers.Main) {
 					Toast.makeText(appContext, "Failed to send: Node service not ready", Toast.LENGTH_SHORT).show()
 				}
@@ -125,7 +176,7 @@ object SharedFileManager {
 
 			if (fileItems.size == 1) {
 				try {
-					sendSharedFileApi(appContext, port, fileItems[0])
+					sendSharedFileApi(appContext, port, token, fileItems[0])
 				} catch (e: Exception) {
 					withContext(Dispatchers.Main) {
 						Toast.makeText(appContext, "Failed to send ${fileItems[0].name}: ${e.message}", Toast.LENGTH_LONG).show()
@@ -133,7 +184,7 @@ object SharedFileManager {
 				}
 			} else if (fileItems.size > 1) {
 				try {
-					sendSharedPackApi(appContext, port, fileItems)
+					sendSharedPackApi(appContext, port, token, fileItems)
 				} catch (e: Exception) {
 					withContext(Dispatchers.Main) {
 						Toast.makeText(appContext, "Failed to send pack: ${e.message}", Toast.LENGTH_LONG).show()
@@ -143,7 +194,7 @@ object SharedFileManager {
 
 			for (item in textItems) {
 				try {
-					sendSharedTextApi(appContext, port, item.text!!)
+					sendSharedTextApi(appContext, port, token, item.text!!)
 				} catch (e: Exception) {
 					withContext(Dispatchers.Main) {
 						Toast.makeText(appContext, "Failed to send text: ${e.message}", Toast.LENGTH_LONG).show()
@@ -153,7 +204,7 @@ object SharedFileManager {
 		}
 	}
 
-	private suspend fun sendSharedPackApi(context: Context, port: Int, items: List<SharedItem>) {
+	private suspend fun sendSharedPackApi(context: Context, port: Int, token: String, items: List<SharedItem>) {
 		val firstBase = items.first().name.substringBeforeLast('.').ifBlank { "shared" }
 		val packName = "${firstBase}_pack.pack"
 		val encodedPackName = URLEncoder.encode(packName, "UTF-8")
@@ -162,11 +213,15 @@ object SharedFileManager {
 		val beginUrl = URL("http://localhost:$port/api/pack/create/begin?name=$encodedPackName")
 		val beginConn = beginUrl.openConnection() as HttpURLConnection
 		beginConn.requestMethod = "PUT"
+		beginConn.setRequestProperty("X-Auth-Token", token)
 		val beginCode = beginConn.responseCode
 		val beginText = if (beginCode in 200..299) {
 			beginConn.inputStream.bufferedReader().readText()
 		} else {
 			beginConn.errorStream?.bufferedReader()?.readText() ?: ""
+		}
+		if (beginCode !in 200..299) {
+			throw Exception("HTTP $beginCode: $beginText")
 		}
 		val beginJson = JSONObject(beginText)
 		if (!beginJson.optBoolean("ok", false)) {
@@ -195,6 +250,7 @@ object SharedFileManager {
 				val fileUrl = URL("http://localhost:$port/api/pack/create/file?sessionId=$sessionId&filePath=$encodedPath")
 				val fileConn = fileUrl.openConnection() as HttpURLConnection
 				fileConn.requestMethod = "PUT"
+				fileConn.setRequestProperty("X-Auth-Token", token)
 				fileConn.doOutput = true
 
 				if (item.size > 0) {
@@ -215,6 +271,9 @@ object SharedFileManager {
 				} else {
 					fileConn.errorStream?.bufferedReader()?.readText() ?: ""
 				}
+				if (fileCode !in 200..299) {
+					throw Exception("HTTP $fileCode: $fileText")
+				}
 				val fileJson = JSONObject(fileText)
 				if (!fileJson.optBoolean("ok", false)) {
 					val err = fileJson.optString("error", "Failed to stage file $uniqueName")
@@ -226,11 +285,15 @@ object SharedFileManager {
 			val finishUrl = URL("http://localhost:$port/api/pack/create/finish?sessionId=$sessionId")
 			val finishConn = finishUrl.openConnection() as HttpURLConnection
 			finishConn.requestMethod = "POST"
+			finishConn.setRequestProperty("X-Auth-Token", token)
 			val finishCode = finishConn.responseCode
 			val finishText = if (finishCode in 200..299) {
 				finishConn.inputStream.bufferedReader().readText()
 			} else {
 				finishConn.errorStream?.bufferedReader()?.readText() ?: ""
+			}
+			if (finishCode !in 200..299) {
+				throw Exception("HTTP $finishCode: $finishText")
 			}
 			val finishJson = JSONObject(finishText)
 			if (!finishJson.optBoolean("ok", false)) {
@@ -247,6 +310,7 @@ object SharedFileManager {
 				val cancelUrl = URL("http://localhost:$port/api/pack/create/cancel?sessionId=$sessionId")
 				val cancelConn = cancelUrl.openConnection() as HttpURLConnection
 				cancelConn.requestMethod = "POST"
+				cancelConn.setRequestProperty("X-Auth-Token", token)
 				cancelConn.responseCode
 			} catch (_: Exception) {
 			}
@@ -254,12 +318,13 @@ object SharedFileManager {
 		}
 	}
 
-	private suspend fun sendSharedFileApi(context: Context, port: Int, item: SharedItem) {
+	private suspend fun sendSharedFileApi(context: Context, port: Int, token: String, item: SharedItem) {
 		val encodedFileName = URLEncoder.encode(item.name, "UTF-8")
 		val urlStr = "http://localhost:$port/api/message/send/file?file=$encodedFileName"
 		val url = URL(urlStr)
 		val conn = url.openConnection() as HttpURLConnection
 		conn.requestMethod = "PUT"
+		conn.setRequestProperty("X-Auth-Token", token)
 		conn.doOutput = true
 
 		if (item.size > 0) {
@@ -280,6 +345,9 @@ object SharedFileManager {
 		} else {
 			conn.errorStream?.bufferedReader()?.readText() ?: ""
 		}
+		if (responseCode !in 200..299) {
+			throw Exception("HTTP $responseCode: $responseText")
+		}
 
 		val json = JSONObject(responseText)
 		if (json.optBoolean("ok", false)) {
@@ -294,11 +362,12 @@ object SharedFileManager {
 		}
 	}
 
-	private suspend fun sendSharedTextApi(context: Context, port: Int, text: String) {
+	private suspend fun sendSharedTextApi(context: Context, port: Int, token: String, text: String) {
 		val urlStr = "http://localhost:$port/api/message/send/text"
 		val url = URL(urlStr)
 		val conn = url.openConnection() as HttpURLConnection
 		conn.requestMethod = "PUT"
+		conn.setRequestProperty("X-Auth-Token", token)
 		conn.doOutput = true
 		conn.setRequestProperty("Content-Type", "text/plain; charset=UTF-8")
 
@@ -313,6 +382,9 @@ object SharedFileManager {
 			conn.inputStream.bufferedReader().readText()
 		} else {
 			conn.errorStream?.bufferedReader()?.readText() ?: ""
+		}
+		if (responseCode !in 200..299) {
+			throw Exception("HTTP $responseCode: $responseText")
 		}
 
 		val json = JSONObject(responseText)

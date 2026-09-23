@@ -14,16 +14,19 @@ import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
 import r3.content.Content
 import r3.hash.hash256
+import r3.http.AuthorizationHandler
 import r3.http.ContentHandler
 import r3.http.HandlerFactory
 import r3.http.WebServer
 import r3.io.log
+import r3.key.Key128
 import r3.org.json.JSONObject
 import java.io.File
 
 class AssetRouter(private val context: Context) : ContentHandler {
 	override fun handle(header: JSONObject, content: Content?): Content? {
 		val uri = header.optString("path", "/")
+		if (uri.startsWith("/api/")) return null
 		val mappedUri = if (uri == "/") "/index.html" else uri
 		val path = mappedUri.removePrefix("/")
 		return try {
@@ -31,6 +34,8 @@ class AssetRouter(private val context: Context) : ContentHandler {
 			val data = inputStream.readBytes()
 			val ext = path.substringAfterLast('.', "")
 			BinaryContent(data, path, ext)
+		} catch (_: java.io.FileNotFoundException) {
+			null
 		} catch (e: Exception) {
 			log("There was an error in AssetRouter $e")
 			null
@@ -54,6 +59,19 @@ class GraffitiService : Service() {
 		@Volatile
 		var messageCount: Int = 0
 			private set
+
+		@Volatile
+		var startupKey: Key128? = null
+			private set
+
+		private var authHandler: AuthorizationHandler? = null
+
+		val authToken: String?
+			get() = authHandler?.authSecret?.arr?.toHexString()
+
+		fun getOrRotateStartupKey(): Key128? {
+			return authHandler?.rotateStartupKey()?.also { startupKey = it } ?: startupKey
+		}
 	}
 
 	private var webserver: WebServer? = null
@@ -137,6 +155,13 @@ class GraffitiService : Service() {
 				0,
 				p2p.tmpDir
 			).apply {
+				val key = Key128.randomKey()
+				val auth = HandlerFactory.createAuthHandler(key)
+				authHandler = auth
+				startupKey = key
+
+				handlers.add(HandlerFactory.createHostOriginHandler())
+				handlers.add(auth)
 				handlers.add(HandlerFactory.createLogRouter())
 				val api = GraffitiAPI(
 					p2p,
@@ -256,6 +281,8 @@ class GraffitiService : Service() {
 		}
 		webserver = null
 		p2p = null
+		authHandler = null
+		startupKey = null
 		running = false
 		port = 0
 	}

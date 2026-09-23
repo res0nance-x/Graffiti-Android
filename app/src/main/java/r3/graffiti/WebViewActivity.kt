@@ -144,7 +144,9 @@ class WebViewActivity : ComponentActivity() {
 		}
 
 		if (isReady) {
-			GraffitiWebView("http://localhost:${GraffitiService.port}/")
+			val key = remember { GraffitiService.getOrRotateStartupKey() }
+			val url = if (key != null) "http://localhost:${GraffitiService.port}/$key" else "http://localhost:${GraffitiService.port}/"
+			GraffitiWebView(url)
 		} else {
 			LoadingScreen()
 		}
