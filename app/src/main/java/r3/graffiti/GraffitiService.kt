@@ -218,9 +218,11 @@ class GraffitiService : Service() {
 					onGetVersion = {
 						try {
 							val pInfo = packageManager.getPackageInfo(packageName, 0)
-							val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
-								.format(java.util.Date(pInfo.lastUpdateTime))
-							"$dateStr (Build ${pInfo.versionName})"
+							val time = pInfo.lastUpdateTime.takeIf { it > 0L }
+								?: runCatching { java.io.File(packageResourcePath).lastModified() }.getOrNull()?.takeIf { it > 0L }
+								?: System.currentTimeMillis()
+							java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
+								.format(java.util.Date(time))
 						} catch (_: Exception) {
 							"Unknown"
 						}

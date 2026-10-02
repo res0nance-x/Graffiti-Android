@@ -1,4 +1,7 @@
 import java.util.Properties
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.TaskAction
 
 plugins {
 	alias(libs.plugins.android.application)
@@ -12,7 +15,7 @@ android {
 	val versionPropsFile = file("version.properties")
 	val versionProps = Properties()
 	if (versionPropsFile.exists()) {
-		versionProps.load(versionPropsFile.inputStream())
+		versionPropsFile.inputStream().use { versionProps.load(it) }
 	}
 	val buildNumber = (versionProps.getProperty("BUILD_NUMBER") ?: "1").toInt()
 
@@ -83,30 +86,39 @@ dependencies {
 	debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-tasks.register("autoIncrementBuildNumber") {
-	doLast {
-		val versionPropsFile = file("version.properties")
+abstract class AutoIncrementBuildNumberTask : DefaultTask() {
+	@get:OutputFile
+	abstract val versionPropertiesFile: RegularFileProperty
+
+	@TaskAction
+	fun increment() {
+		val file = versionPropertiesFile.get().asFile
 		val versionProps = Properties()
-		if (versionPropsFile.exists()) {
-			versionProps.load(versionPropsFile.inputStream())
+		if (file.exists()) {
+			file.inputStream().use { versionProps.load(it) }
 		}
 		val currentBuild = (versionProps.getProperty("BUILD_NUMBER") ?: "1").toInt()
-		versionProps.setProperty("BUILD_NUMBER", (currentBuild + 1).toString())
-		versionProps.store(versionPropsFile.outputStream(), null)
-		println("Build number incremented to: ${currentBuild + 1}")
+		val nextBuild = currentBuild + 1
+		versionProps.setProperty("BUILD_NUMBER", nextBuild.toString())
+		file.outputStream().use { versionProps.store(it, null) }
+		println("Build number incremented to: $nextBuild")
 	}
+}
+
+val autoIncrementTask = tasks.register<AutoIncrementBuildNumberTask>("autoIncrementBuildNumber") {
+	versionPropertiesFile.set(layout.projectDirectory.file("version.properties"))
 }
 
 // Hook into release builds
 tasks.matching {
 	(it.name.contains("assembleRelease") || it.name.contains("bundleRelease"))
-}.all {
-	dependsOn("autoIncrementBuildNumber")
+}.configureEach {
+	dependsOn(autoIncrementTask)
 }
 
 // Also allow manual trigger for testing
-if (project.hasProperty("forceIncrement")) {
+if (providers.gradleProperty("forceIncrement").isPresent) {
 	tasks.named("preBuild") {
-		dependsOn("autoIncrementBuildNumber")
+		dependsOn(autoIncrementTask)
 	}
 }
