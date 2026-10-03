@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -214,6 +215,17 @@ class GraffitiService : Service() {
 					}
 					onBellReceived = { _, sound ->
 						bellPlayer?.play(sound)
+					}
+					onOpenUrl = { url ->
+						try {
+							val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+								addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+							}
+							startActivity(browserIntent)
+							true
+						} catch (_: Exception) {
+							false
+						}
 					}
 					onGetVersion = {
 						try {

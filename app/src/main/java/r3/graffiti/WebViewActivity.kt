@@ -50,6 +50,20 @@ class WebViewActivity : ComponentActivity() {
 				triggerSaveAs(url)
 			}
 		}
+
+		@JavascriptInterface
+		fun openUrl(url: String) {
+			runOnUiThread {
+				try {
+					val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+						addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+					}
+					startActivity(intent)
+				} catch (e: Exception) {
+					Toast.makeText(this@WebViewActivity, "Failed to open link: ${e.message}", Toast.LENGTH_SHORT).show()
+				}
+			}
+		}
 	}
 
 	private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->

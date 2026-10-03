@@ -14,3 +14,9 @@
 
 # Optional: Keep line numbers for better stack traces
 -keepattributes SourceFile,LineNumberTable
+
+# Suppress warnings for Java AWT classes not present on Android
+-dontwarn java.awt.Desktop$Action
+-dontwarn java.awt.Desktop
+-dontwarn java.awt.GraphicsEnvironment
+
