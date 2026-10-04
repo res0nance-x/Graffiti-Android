@@ -244,6 +244,7 @@ class GraffitiService : Service() {
 						}
 					}
 				}
+				handlers.add(r3.http.RequestLogRouter(errorsOnly = true))
 				handlers.add(api)
 				handlers.add(AssetRouter(this@GraffitiService))
 				tempFileManagerFactory = CustomTempFileManagerFactory { p2p.tmpDir }
