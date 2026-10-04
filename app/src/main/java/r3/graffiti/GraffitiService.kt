@@ -46,6 +46,10 @@ class AssetRouter(private val context: Context) : ContentHandler {
 
 class GraffitiService : Service() {
 	companion object {
+		init {
+			GraffitiApp.initLogging()
+		}
+
 		const val ACTION_STOP_SERVICE = "r3.graffiti.ACTION_STOP_SERVICE"
 		private const val NOTIFICATION_ID = 1
 		private const val CHANNEL_ID = "graffiti_service_channel"
