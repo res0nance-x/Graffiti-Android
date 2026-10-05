@@ -8,9 +8,6 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.setValue
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
 import r3.http.ContentHandler
@@ -22,7 +19,8 @@ import java.io.File
 object PackHolder {
 	var currentPack: Pack? = null
 	var currentPackName: String = "Pack Viewer"
-	var listeningPort by mutableIntStateOf(0)
+	@Volatile
+	var listeningPort: Int = 0
 }
 
 class PackMediaPlaybackService : Service() {
@@ -73,7 +71,7 @@ class PackMediaPlaybackService : Service() {
 			tmpDir.mkdirs()
 		}
 		val ws = WebServer(null, 0, tmpDir)
-		ws.handlers.add(HandlerFactory.createLogRouter())
+		ws.handlers.add(HandlerFactory.createLogRouter(errorsOnly = true))
 		ws.handlers.add(HandlerFactory.createWelcomeHandler())
 		ws.handlers.add(HandlerFactory.createPackHandler(pack))
 		ws.handlers.add(ContentHandler { header, _ ->

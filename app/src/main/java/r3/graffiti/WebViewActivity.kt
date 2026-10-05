@@ -4,27 +4,25 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -33,7 +31,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import r3.graffiti.ui.theme.GraffitiTheme
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
@@ -102,6 +99,8 @@ class WebViewActivity : ComponentActivity() {
 	private var customView: View? = null
 	private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 	private var webView: WebView? = null
+	private lateinit var rootLayout: FrameLayout
+	private lateinit var loadingLayout: LinearLayout
 
 	override fun onCreate(savedInstanceState: Bundle?) {
 		enableEdgeToEdge()
@@ -112,24 +111,147 @@ class WebViewActivity : ComponentActivity() {
 		requestPermissions()
 		startGraffitiService()
 
-		setContent {
-			GraffitiTheme {
-				Surface(
-					modifier = Modifier
-						.fillMaxSize()
-						.safeDrawingPadding(),
-					color = MaterialTheme.colorScheme.background
-				) {
-					GraffitiApp()
+		setupViews()
+		setupBackNavigation()
+		waitForServiceAndLoad()
+	}
+
+	override fun onNewIntent(intent: Intent) {
+		super.onNewIntent(intent)
+		setIntent(intent)
+		SharedFileManager.handleIntent(this, intent)
+	}
+
+	@SuppressLint("SetJavaScriptEnabled")
+	private fun setupViews() {
+		rootLayout = FrameLayout(this).apply {
+			layoutParams = ViewGroup.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT,
+				ViewGroup.LayoutParams.MATCH_PARENT
+			)
+			setBackgroundColor(Color.BLACK)
+		}
+
+		ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { view, insets ->
+			val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+			view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+			insets
+		}
+
+		loadingLayout = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			gravity = Gravity.CENTER
+			layoutParams = FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.MATCH_PARENT,
+				FrameLayout.LayoutParams.MATCH_PARENT
+			)
+
+			val spinner = ProgressBar(this@WebViewActivity).apply {
+				isIndeterminate = true
+			}
+			val textView = TextView(this@WebViewActivity).apply {
+				text = "Starting Graffiti Node..."
+				setTextColor(Color.WHITE)
+				textSize = 16f
+				setPadding(0, 32, 0, 0)
+			}
+
+			addView(spinner)
+			addView(textView)
+		}
+		rootLayout.addView(loadingLayout)
+
+		val wv = WebView(this).apply {
+			layoutParams = FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.MATCH_PARENT,
+				FrameLayout.LayoutParams.MATCH_PARENT
+			)
+			setBackgroundColor(Color.BLACK)
+			visibility = View.GONE
+			settings.apply {
+				javaScriptEnabled = true
+				domStorageEnabled = true
+				loadWithOverviewMode = true
+				useWideViewPort = true
+				cacheMode = WebSettings.LOAD_NO_CACHE
+				mediaPlaybackRequiresUserGesture = false
+			}
+
+			clearCache(true)
+			addJavascriptInterface(AndroidBridge(), "Android")
+			webViewClient = WebViewClient()
+			webChromeClient = object : WebChromeClient() {
+				override fun onShowFileChooser(
+					webView: WebView?,
+					filePathCallback: ValueCallback<Array<Uri>>?,
+					fileChooserParams: FileChooserParams?
+				): Boolean {
+					this@WebViewActivity.filePathCallback?.onReceiveValue(null)
+					this@WebViewActivity.filePathCallback = filePathCallback
+					if (fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+						multipleFilePickerLauncher.launch(arrayOf("*/*"))
+					} else {
+						filePickerLauncher.launch(arrayOf("*/*"))
+					}
+					return true
 				}
+
+				override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+					if (customView != null) {
+						callback?.onCustomViewHidden()
+						return
+					}
+					customView = view
+					customViewCallback = callback
+
+					val decorView = window.decorView as FrameLayout
+					decorView.addView(
+						view,
+						FrameLayout.LayoutParams(
+							FrameLayout.LayoutParams.MATCH_PARENT,
+							FrameLayout.LayoutParams.MATCH_PARENT
+						)
+					)
+
+					this@WebViewActivity.webView?.visibility = View.GONE
+
+					WindowCompat.getInsetsController(window, window.decorView).apply {
+						hide(WindowInsetsCompat.Type.systemBars())
+						systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+					}
+				}
+
+				override fun onHideCustomView() {
+					if (customView == null) return
+
+					val decorView = window.decorView as FrameLayout
+					decorView.removeView(customView)
+					customView = null
+					customViewCallback?.onCustomViewHidden()
+
+					this@WebViewActivity.webView?.visibility = View.VISIBLE
+
+					WindowCompat.getInsetsController(window, window.decorView).apply {
+						show(WindowInsetsCompat.Type.systemBars())
+					}
+				}
+			}
+			setDownloadListener { downloadUrl, _, _, _, _ ->
+				triggerSaveAs(downloadUrl)
 			}
 		}
 
+		this.webView = wv
+		rootLayout.addView(wv)
+		setContentView(rootLayout)
+	}
+
+	private fun setupBackNavigation() {
 		onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
 			override fun handleOnBackPressed() {
 				val wv = webView
 				if (customView != null) {
-					wv?.webChromeClient?.onHideCustomView()
+					customViewCallback?.onCustomViewHidden()
 				} else if (wv != null && wv.canGoBack()) {
 					wv.goBack()
 				} else {
@@ -140,133 +262,23 @@ class WebViewActivity : ComponentActivity() {
 		})
 	}
 
-	override fun onNewIntent(intent: Intent) {
-		super.onNewIntent(intent)
-		setIntent(intent)
-		SharedFileManager.handleIntent(this, intent)
-	}
-
-	@Composable
-	fun GraffitiApp() {
-		var isReady by remember { mutableStateOf(GraffitiService.port != 0) }
-
-		LaunchedEffect(Unit) {
+	private fun waitForServiceAndLoad() {
+		lifecycleScope.launch {
 			while (GraffitiService.port == 0) {
 				delay(100.milliseconds)
 			}
-			isReady = true
-		}
-
-		if (isReady) {
-			val key = remember { GraffitiService.getOrRotateStartupKey() }
-			val url = if (key != null) "http://localhost:${GraffitiService.port}/$key" else "http://localhost:${GraffitiService.port}/"
-			GraffitiWebView(url)
-		} else {
-			LoadingScreen()
-		}
-	}
-
-	@Composable
-	fun LoadingScreen() {
-		Box(
-			modifier = Modifier.fillMaxSize(),
-			contentAlignment = Alignment.Center
-		) {
-			Column(horizontalAlignment = Alignment.CenterHorizontally) {
-				CircularProgressIndicator()
-				Spacer(modifier = Modifier.height(16.dp))
-				Text(text = "Starting Graffiti Node...")
+			val key = GraffitiService.getOrRotateStartupKey()
+			val url = if (key != null) {
+				"http://localhost:${GraffitiService.port}/$key"
+			} else {
+				"http://localhost:${GraffitiService.port}/"
+			}
+			loadingLayout.visibility = View.GONE
+			webView?.apply {
+				visibility = View.VISIBLE
+				loadUrl(url)
 			}
 		}
-	}
-
-	@SuppressLint("SetJavaScriptEnabled")
-	@Composable
-	fun GraffitiWebView(url: String) {
-		AndroidView(
-			factory = { ctx ->
-				WebView(ctx).apply {
-					layoutParams = ViewGroup.LayoutParams(
-						ViewGroup.LayoutParams.MATCH_PARENT,
-						ViewGroup.LayoutParams.MATCH_PARENT
-					)
-					settings.apply {
-						javaScriptEnabled = true
-						domStorageEnabled = true
-						loadWithOverviewMode = true
-						useWideViewPort = true
-						cacheMode = WebSettings.LOAD_NO_CACHE
-						mediaPlaybackRequiresUserGesture = false
-					}
-
-					clearCache(true)
-					addJavascriptInterface(AndroidBridge(), "Android")
-					webViewClient = WebViewClient()
-					webChromeClient = object : WebChromeClient() {
-						override fun onShowFileChooser(
-							webView: WebView?,
-							filePathCallback: ValueCallback<Array<Uri>>?,
-							fileChooserParams: FileChooserParams?
-						): Boolean {
-							this@WebViewActivity.filePathCallback?.onReceiveValue(null)
-							this@WebViewActivity.filePathCallback = filePathCallback
-							if (fileChooserParams?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
-								multipleFilePickerLauncher.launch(arrayOf("*/*"))
-							} else {
-								filePickerLauncher.launch(arrayOf("*/*"))
-							}
-							return true
-						}
-
-						override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-							if (customView != null) {
-								callback?.onCustomViewHidden()
-								return
-							}
-							customView = view
-							customViewCallback = callback
-
-							val decorView = window.decorView as FrameLayout
-							decorView.addView(
-								view,
-								FrameLayout.LayoutParams(
-									FrameLayout.LayoutParams.MATCH_PARENT,
-									FrameLayout.LayoutParams.MATCH_PARENT
-								)
-							)
-
-							this@WebViewActivity.webView?.visibility = View.GONE
-
-							WindowCompat.getInsetsController(window, window.decorView).apply {
-								hide(WindowInsetsCompat.Type.systemBars())
-								systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-							}
-						}
-
-						override fun onHideCustomView() {
-							if (customView == null) return
-
-							val decorView = window.decorView as FrameLayout
-							decorView.removeView(customView)
-							customView = null
-							customViewCallback?.onCustomViewHidden()
-
-							this@WebViewActivity.webView?.visibility = View.VISIBLE
-
-							WindowCompat.getInsetsController(window, window.decorView).apply {
-								show(WindowInsetsCompat.Type.systemBars())
-							}
-						}
-					}
-					setDownloadListener { downloadUrl, _, _, _, _ ->
-						triggerSaveAs(downloadUrl)
-					}
-					this@WebViewActivity.webView = this
-					loadUrl(url)
-				}
-			},
-			modifier = Modifier.fillMaxSize()
-		)
 	}
 
 	private fun requestPermissions() {
@@ -290,7 +302,6 @@ class WebViewActivity : ComponentActivity() {
 		val intent = Intent(this, GraffitiService::class.java)
 		startService(intent)
 	}
-
 
 	private fun triggerSaveAs(url: String) {
 		if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -361,5 +372,17 @@ class WebViewActivity : ComponentActivity() {
 				}
 			}
 		}
+	}
+
+	override fun onDestroy() {
+		super.onDestroy()
+		webView?.apply {
+			stopLoading()
+			loadUrl("about:blank")
+			onPause()
+			removeAllViews()
+			destroy()
+		}
+		webView = null
 	}
 }

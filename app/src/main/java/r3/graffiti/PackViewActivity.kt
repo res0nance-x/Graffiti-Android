@@ -1,54 +1,33 @@
 package r3.graffiti
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.FrameLayout
+import android.widget.*
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.milliseconds
 import r3.encryption.EncryptedSource
-import r3.graffiti.ui.theme.GraffitiTheme
 import r3.hash.hash256
 import r3.math.EncryptedSequence
 import r3.pack.BinaryPack
@@ -57,46 +36,44 @@ import r3.pke.Password256
 import r3.source.FileSource
 import r3.source.Source
 import java.io.File
-import android.graphics.Color as AndroidColor
 
 class PackViewActivity : ComponentActivity() {
-	private var intentUri = mutableStateOf<Uri?>(null)
-	private var intentFilePath = mutableStateOf<String?>(null)
+
+	private var intentUri: Uri? = null
+	private var intentFilePath: String? = null
+
+	private lateinit var rootLayout: FrameLayout
+	private lateinit var loadingLayout: LinearLayout
+	private lateinit var errorLayout: LinearLayout
+	private lateinit var errorTextView: TextView
+	private lateinit var webView: WebView
+
+	private var customView: View? = null
+	private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+	private var customViewContainer: FrameLayout? = null
+
 	override fun onCreate(savedInstanceState: Bundle?) {
 		enableEdgeToEdge()
 		super.onCreate(savedInstanceState)
 
 		handleIntent(intent)
-
-		setContent {
-			GraffitiTheme {
-				Surface(
-					modifier = Modifier.fillMaxSize(),
-					color = MaterialTheme.colorScheme.background
-				) {
-					Box(modifier = Modifier.safeDrawingPadding()) {
-						PackViewerScreen(
-							uri = intentUri.value,
-							filePath = intentFilePath.value,
-							onClose = { finish() }
-						)
-					}
-				}
-			}
-		}
+		setupViews()
+		setupBackNavigation()
+		initiatePackLoad()
 	}
 
 	override fun onNewIntent(intent: Intent) {
 		super.onNewIntent(intent)
 		handleIntent(intent)
+		initiatePackLoad()
 	}
 
 	private fun handleIntent(intent: Intent?) {
 		if (intent == null) return
 		val path = intent.getStringExtra("packPath")
 		if (!path.isNullOrEmpty()) {
-			intentFilePath.value = path
-			intentUri.value = null
+			intentFilePath = path
+			intentUri = null
 			return
 		}
 
@@ -104,207 +81,241 @@ class PackViewActivity : ComponentActivity() {
 			val uri = intent.data
 			if (uri != null) {
 				if (uri.scheme == "file") {
-					intentFilePath.value = uri.path
-					intentUri.value = null
+					intentFilePath = uri.path
+					intentUri = null
 				} else {
-					intentUri.value = uri
-					intentFilePath.value = null
+					intentUri = uri
+					intentFilePath = null
 				}
 			}
 		}
 	}
 
 	@SuppressLint("SetJavaScriptEnabled")
-	@Composable
-	fun PackViewerScreen(
-		uri: Uri?,
-		filePath: String?,
-		onClose: () -> Unit
-	) {
-		val context = LocalContext.current
-		var showPasswordDialog by remember { mutableStateOf(false) }
-		var errorMessage by remember { mutableStateOf<String?>(null) }
-		var isLoading by remember { mutableStateOf(false) }
-		val coroutineScope = rememberCoroutineScope()
-		var customView by remember { mutableStateOf<View?>(null) }
-		var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
-		val listeningPort = PackHolder.listeningPort
-		val currentUrl = if (listeningPort != 0) "http://localhost:$listeningPort/" else null
-		fun processPackLoad(password: String? = null) {
-			coroutineScope.launch {
-				isLoading = true
-				errorMessage = null
-				try {
-					loadPackSource(uri, filePath, password)
-				} catch (e: Exception) {
-					val msg = e.message ?: "Failed to load pack"
-					if (msg == "PASSWORD_REQUIRED" || msg == "INVALID_PASSWORD") {
-						showPasswordDialog = true
-						if (msg == "INVALID_PASSWORD") {
-							errorMessage = "Invalid password. Please try again."
-						}
-					} else {
-						errorMessage = msg
-					}
-				} finally {
-					isLoading = false
-				}
-			}
-		}
-
-		LaunchedEffect(uri, filePath) {
-			if (uri != null || filePath != null) {
-				val fileName = getFileName(uri, filePath)
-				if (fileName.endsWith(".epack", ignoreCase = true)) {
-					showPasswordDialog = true
-				} else {
-					processPackLoad(null)
-				}
-			}
-		}
-
-		if (showPasswordDialog) {
-			var password by remember { mutableStateOf("") }
-			AlertDialog(
-				onDismissRequest = {
-					showPasswordDialog = false
-					if (listeningPort == 0) {
-						onClose()
-					}
-				},
-				title = { Text("Enter Password") },
-				text = {
-					Column {
-						OutlinedTextField(
-							value = password,
-							onValueChange = { password = it },
-							label = { Text("Password") },
-							singleLine = true
-						)
-						if (errorMessage != null) {
-							Spacer(modifier = Modifier.height(8.dp))
-							Text(
-								text = errorMessage!!,
-								color = MaterialTheme.colorScheme.error,
-								style = MaterialTheme.typography.bodySmall
-							)
-						}
-					}
-				},
-				confirmButton = {
-					TextButton(onClick = {
-						showPasswordDialog = false
-						processPackLoad(password)
-					}) {
-						Text("OK")
-					}
-				},
-				dismissButton = {
-					TextButton(onClick = {
-						showPasswordDialog = false
-						if (listeningPort == 0) {
-							onClose()
-						}
-					}) {
-						Text("Cancel")
-					}
-				}
+	private fun setupViews() {
+		rootLayout = FrameLayout(this).apply {
+			layoutParams = ViewGroup.LayoutParams(
+				ViewGroup.LayoutParams.MATCH_PARENT,
+				ViewGroup.LayoutParams.MATCH_PARENT
 			)
+			setBackgroundColor(Color.BLACK)
 		}
 
-		if (currentUrl != null) {
-			BackHandler {
+		ViewCompat.setOnApplyWindowInsetsListener(rootLayout) { view, insets ->
+			val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+			view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+			insets
+		}
+
+		loadingLayout = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			gravity = Gravity.CENTER
+			layoutParams = FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.MATCH_PARENT,
+				FrameLayout.LayoutParams.MATCH_PARENT
+			)
+
+			val spinner = ProgressBar(this@PackViewActivity).apply {
+				isIndeterminate = true
+			}
+			val textView = TextView(this@PackViewActivity).apply {
+				text = "Opening Pack..."
+				setTextColor(Color.WHITE)
+				textSize = 16f
+				setPadding(0, 32, 0, 0)
+			}
+
+			addView(spinner)
+			addView(textView)
+		}
+		rootLayout.addView(loadingLayout)
+
+		errorLayout = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			gravity = Gravity.CENTER
+			visibility = View.GONE
+			layoutParams = FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.MATCH_PARENT,
+				FrameLayout.LayoutParams.MATCH_PARENT
+			)
+
+			errorTextView = TextView(this@PackViewActivity).apply {
+				setTextColor(Color.RED)
+				textSize = 16f
+				gravity = Gravity.CENTER
+				setPadding(32, 0, 32, 32)
+			}
+			val closeButton = Button(this@PackViewActivity).apply {
+				text = "Close"
+				setOnClickListener { finish() }
+			}
+
+			addView(errorTextView)
+			addView(closeButton)
+		}
+		rootLayout.addView(errorLayout)
+
+		webView = WebView(this).apply {
+			layoutParams = FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.MATCH_PARENT,
+				FrameLayout.LayoutParams.MATCH_PARENT
+			)
+			setBackgroundColor(Color.BLACK)
+			visibility = View.GONE
+			settings.apply {
+				javaScriptEnabled = true
+				allowFileAccess = true
+				domStorageEnabled = true
+				mediaPlaybackRequiresUserGesture = false
+			}
+
+			webViewClient = WebViewClient()
+			webChromeClient = object : WebChromeClient() {
+				override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+					customView = view
+					customViewCallback = callback
+					customViewContainer = FrameLayout(this@PackViewActivity).apply {
+						setBackgroundColor(Color.BLACK)
+						addView(view, FrameLayout.LayoutParams(
+							FrameLayout.LayoutParams.MATCH_PARENT,
+							FrameLayout.LayoutParams.MATCH_PARENT
+						))
+					}
+					rootLayout.addView(customViewContainer)
+					webView.visibility = View.GONE
+				}
+
+				override fun onHideCustomView() {
+					customViewContainer?.let { rootLayout.removeView(it) }
+					customViewContainer = null
+					customView = null
+					customViewCallback = null
+					webView.visibility = View.VISIBLE
+				}
+			}
+		}
+		rootLayout.addView(webView)
+
+		setContentView(rootLayout)
+	}
+
+	private fun setupBackNavigation() {
+		onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+			override fun handleOnBackPressed() {
 				if (customView != null) {
 					customViewCallback?.onCustomViewHidden()
 				} else {
 					stopPlaybackService()
-					onClose()
+					finish()
 				}
 			}
-			Box(
-				modifier = Modifier
-					.fillMaxSize()
-					.background(Color.Black)
-			) {
-				AndroidView(
-					factory = { ctx ->
-						WebView(ctx).apply {
-							layoutParams = ViewGroup.LayoutParams(
-								ViewGroup.LayoutParams.MATCH_PARENT,
-								ViewGroup.LayoutParams.MATCH_PARENT
-							)
-							setBackgroundColor(AndroidColor.BLACK)
-							settings.apply {
-								javaScriptEnabled = true
-								allowFileAccess = true
-								domStorageEnabled = true
-								mediaPlaybackRequiresUserGesture = false
-							}
-							webViewClient = WebViewClient()
-							webChromeClient = object : WebChromeClient() {
-								override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-									customView = view
-									customViewCallback = callback
-								}
+		})
+	}
 
-								override fun onHideCustomView() {
-									customView = null
-									customViewCallback = null
-								}
-							}
-						}
-					},
-					update = { webView ->
-						if (webView.url != currentUrl) {
-							webView.loadUrl(currentUrl)
-						}
-					},
-					onRelease = { webView ->
-						webView.stopLoading()
-						webView.loadUrl("about:blank")
-						webView.onPause()
-						webView.removeAllViews()
-						webView.destroy()
-					},
-					modifier = Modifier.fillMaxSize()
-				)
-
-				if (customView != null) {
-					AndroidView(
-						factory = { ctx ->
-							FrameLayout(ctx).apply {
-								setBackgroundColor(AndroidColor.BLACK)
-								(customView?.parent as? ViewGroup)?.removeView(customView)
-								addView(customView)
-							}
-						},
-						modifier = Modifier.fillMaxSize()
-					)
-				}
+	private fun initiatePackLoad() {
+		if (intentUri != null || intentFilePath != null) {
+			val fileName = getFileName(intentUri, intentFilePath)
+			if (fileName.endsWith(".epack", ignoreCase = true)) {
+				showPasswordPrompt(null)
+			} else {
+				processPackLoad(null)
 			}
 		} else {
-			Box(
-				modifier = Modifier.fillMaxSize(),
-				contentAlignment = Alignment.Center
-			) {
-				if (isLoading) {
-					Column(horizontalAlignment = Alignment.CenterHorizontally) {
-						CircularProgressIndicator()
-						Spacer(modifier = Modifier.height(16.dp))
-						Text("Opening Pack...")
+			waitForExistingPackServer()
+		}
+	}
+
+	private fun waitForExistingPackServer() {
+		loadingLayout.visibility = View.VISIBLE
+		errorLayout.visibility = View.GONE
+		lifecycleScope.launch {
+			var port = PackHolder.listeningPort
+			var attempts = 0
+			while (port == 0 && attempts < 50) {
+				delay(100.milliseconds)
+				port = PackHolder.listeningPort
+				attempts++
+			}
+			if (port != 0) {
+				loadingLayout.visibility = View.GONE
+				webView.visibility = View.VISIBLE
+				if (webView.url != "http://localhost:$port/") {
+					webView.loadUrl("http://localhost:$port/")
+				}
+			} else {
+				loadingLayout.visibility = View.GONE
+				errorLayout.visibility = View.VISIBLE
+				errorTextView.text = "Error: Pack playback service not responding"
+			}
+		}
+	}
+
+	private fun showPasswordPrompt(previousError: String?) {
+		val input = EditText(this).apply {
+			inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+			hint = "Password"
+			setPadding(48, 24, 48, 24)
+		}
+
+		val container = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			setPadding(32, 16, 32, 0)
+			if (previousError != null) {
+				val errView = TextView(this@PackViewActivity).apply {
+					text = previousError
+					setTextColor(Color.RED)
+					setPadding(48, 8, 48, 16)
+				}
+				addView(errView)
+			}
+			addView(input)
+		}
+
+		AlertDialog.Builder(this)
+			.setTitle("Enter Password")
+			.setView(container)
+			.setPositiveButton("OK") { _, _ ->
+				val password = input.text.toString()
+				processPackLoad(password)
+			}
+			.setNegativeButton("Cancel") { _, _ ->
+				if (PackHolder.listeningPort == 0) {
+					finish()
+				}
+			}
+			.setOnCancelListener {
+				if (PackHolder.listeningPort == 0) {
+					finish()
+				}
+			}
+			.show()
+	}
+
+	private fun processPackLoad(password: String?) {
+		loadingLayout.visibility = View.VISIBLE
+		errorLayout.visibility = View.GONE
+
+		lifecycleScope.launch {
+			try {
+				loadPackSource(intentUri, intentFilePath, password)
+				val listeningPort = PackHolder.listeningPort
+				if (listeningPort != 0) {
+					loadingLayout.visibility = View.GONE
+					errorLayout.visibility = View.GONE
+					webView.apply {
+						visibility = View.VISIBLE
+						loadUrl("http://localhost:$listeningPort/")
 					}
-				} else if (errorMessage != null && !showPasswordDialog) {
-					Column(horizontalAlignment = Alignment.CenterHorizontally) {
-						Text(
-							text = "Error: $errorMessage",
-							color = MaterialTheme.colorScheme.error,
-							style = MaterialTheme.typography.bodyMedium
-						)
-						Spacer(modifier = Modifier.height(16.dp))
-						Button(onClick = { onClose() }) {
-							Text("Close")
-						}
-					}
+				}
+			} catch (e: Exception) {
+				val msg = e.message ?: "Failed to load pack"
+				loadingLayout.visibility = View.GONE
+				if (msg == "PASSWORD_REQUIRED" || msg == "INVALID_PASSWORD") {
+					val errDesc = if (msg == "INVALID_PASSWORD") "Invalid password. Please try again." else null
+					showPasswordPrompt(errDesc)
+				} else {
+					errorLayout.visibility = View.VISIBLE
+					errorTextView.text = "Error: $msg"
 				}
 			}
 		}
@@ -381,5 +392,16 @@ class PackViewActivity : ComponentActivity() {
 			}
 		}
 		return "pack"
+	}
+
+	override fun onDestroy() {
+		super.onDestroy()
+		webView.apply {
+			stopLoading()
+			loadUrl("about:blank")
+			onPause()
+			removeAllViews()
+			destroy()
+		}
 	}
 }

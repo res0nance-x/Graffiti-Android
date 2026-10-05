@@ -167,7 +167,6 @@ class GraffitiService : Service() {
 
 				handlers.add(HandlerFactory.createHostOriginHandler())
 				handlers.add(auth)
-				handlers.add(HandlerFactory.createLogRouter())
 				val api = GraffitiAPI(
 					p2p,
 					{ json ->
@@ -244,7 +243,7 @@ class GraffitiService : Service() {
 						}
 					}
 				}
-				handlers.add(r3.http.RequestLogRouter(errorsOnly = true))
+				handlers.add(HandlerFactory.createLogRouter(errorsOnly = true))
 				handlers.add(api)
 				handlers.add(AssetRouter(this@GraffitiService))
 				tempFileManagerFactory = CustomTempFileManagerFactory { p2p.tmpDir }
