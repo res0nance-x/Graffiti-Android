@@ -188,7 +188,7 @@ class GraffitiService : Service() {
 						}
 
 						try {
-							pack.keys.size
+							pack.size
 						} catch (_: Exception) {
 							throw IllegalArgumentException("INVALID_PASSWORD")
 						}
