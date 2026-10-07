@@ -216,9 +216,7 @@ class GraffitiService : Service() {
 						}
 						startService(stopIntent)
 					}
-					onBellReceived = { _, sound ->
-						bellPlayer?.play(sound)
-					}
+
 					onOpenUrl = { url ->
 						try {
 							val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
