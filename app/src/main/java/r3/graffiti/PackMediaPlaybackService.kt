@@ -70,7 +70,7 @@ class PackMediaPlaybackService : Service() {
 		if (!tmpDir.exists()) {
 			tmpDir.mkdirs()
 		}
-		val ws = WebServer(null, 0, tmpDir)
+		val ws = WebServer("localhost", 0, tmpDir)
 		ws.handlers.add(HandlerFactory.createLogRouter(errorsOnly = true))
 		ws.handlers.add(HandlerFactory.createWelcomeHandler())
 		ws.handlers.add(HandlerFactory.createPackHandler(pack))

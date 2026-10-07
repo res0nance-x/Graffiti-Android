@@ -298,7 +298,13 @@ class PackViewActivity : ComponentActivity() {
 		lifecycleScope.launch {
 			try {
 				loadPackSource(intentUri, intentFilePath, password)
-				val listeningPort = PackHolder.listeningPort
+				var listeningPort = PackHolder.listeningPort
+				var attempts = 0
+				while (listeningPort == 0 && attempts < 50) {
+					delay(100.milliseconds)
+					listeningPort = PackHolder.listeningPort
+					attempts++
+				}
 				if (listeningPort != 0) {
 					loadingLayout.visibility = View.GONE
 					errorLayout.visibility = View.GONE
@@ -306,6 +312,10 @@ class PackViewActivity : ComponentActivity() {
 						visibility = View.VISIBLE
 						loadUrl("http://localhost:$listeningPort/")
 					}
+				} else {
+					loadingLayout.visibility = View.GONE
+					errorLayout.visibility = View.VISIBLE
+					errorTextView.text = "Error: Pack playback service not responding"
 				}
 			} catch (e: Exception) {
 				val msg = e.message ?: "Failed to load pack"

@@ -31,15 +31,18 @@ class UriSource(
 				// Ignore
 			}
 
-			if (size == 0L) {
+			if (size <= 0L) {
 				try {
 					contentResolver.openAssetFileDescriptor(uri, "r")?.use { fd ->
-						size = fd.length
+						val len = fd.length
+						if (len > 0L) {
+							size = len
+						}
 					}
 				} catch (_: Exception) {
 					// Ignore
 				}
 			}
-			return size
+			return if (size > 0L) size else 0L
 		}
 }

@@ -43,8 +43,13 @@ class WebViewActivity : ComponentActivity() {
 	inner class AndroidBridge {
 		@JavascriptInterface
 		fun download(url: String) {
+			download(url, null)
+		}
+
+		@JavascriptInterface
+		fun download(url: String, filename: String?) {
 			runOnUiThread {
-				triggerSaveAs(url)
+				triggerSaveAs(url, filename)
 			}
 		}
 
@@ -236,8 +241,10 @@ class WebViewActivity : ComponentActivity() {
 					}
 				}
 			}
-			setDownloadListener { downloadUrl, _, _, _, _ ->
-				triggerSaveAs(downloadUrl)
+			setDownloadListener { downloadUrl, _, contentDisposition, mimetype, _ ->
+				val fileName = extractFilename(contentDisposition)
+					?: URLUtil.guessFileName(downloadUrl, contentDisposition, mimetype)
+				triggerSaveAs(downloadUrl, fileName)
 			}
 		}
 
@@ -303,9 +310,32 @@ class WebViewActivity : ComponentActivity() {
 		startService(intent)
 	}
 
-	private fun triggerSaveAs(url: String) {
+	private fun applyAuthAndCookies(connection: HttpURLConnection, url: String) {
+		try {
+			val host = URL(url).host
+			if (host.equals("localhost", ignoreCase = true) || host == "127.0.0.1" || host == "::1") {
+				GraffitiService.authToken?.let { token ->
+					connection.setRequestProperty("X-Auth-Token", token)
+				}
+			}
+		} catch (_: Exception) {}
+
+		try {
+			val cookies = CookieManager.getInstance().getCookie(url)
+			if (!cookies.isNullOrEmpty()) {
+				connection.setRequestProperty("Cookie", cookies)
+			}
+		} catch (_: Exception) {}
+	}
+
+	private fun triggerSaveAs(url: String, suggestedFileName: String? = null) {
 		if (!url.startsWith("http://") && !url.startsWith("https://")) {
 			Toast.makeText(this, "Unsupported protocol: ${url.substringBefore(':')}", Toast.LENGTH_SHORT).show()
+			return
+		}
+		if (!suggestedFileName.isNullOrBlank()) {
+			pendingDownloadUrl = url
+			fileSaverLauncher.launch(suggestedFileName)
 			return
 		}
 		lifecycleScope.launch(Dispatchers.IO) {
@@ -313,6 +343,7 @@ class WebViewActivity : ComponentActivity() {
 				val connection = URL(url).openConnection() as HttpURLConnection
 				connection.requestMethod = "HEAD"
 				connection.connectTimeout = 3000
+				applyAuthAndCookies(connection, url)
 				connection.connect()
 				val contentType = connection.contentType ?: "*/*"
 				val contentDisposition = connection.getHeaderField("Content-Disposition")
@@ -337,14 +368,37 @@ class WebViewActivity : ComponentActivity() {
 
 	private fun extractFilename(contentDisposition: String?): String? {
 		if (contentDisposition == null) return null
-		val regex = """filename\s*=\s*"?([^"\s;]+)"?""".toRegex(RegexOption.IGNORE_CASE)
-		val matchResult = regex.find(contentDisposition)
-		val encodedName = matchResult?.groups?.get(1)?.value ?: return null
-		return try {
-			URLDecoder.decode(encodedName, "UTF-8")
-		} catch (e: Exception) {
-			encodedName
+		// 1. Check RFC 5987 / RFC 6266 filename*=UTF-8''...
+		val rfcMatch = """filename\*\s*=\s*UTF-8''([^;\s]+)""".toRegex(RegexOption.IGNORE_CASE).find(contentDisposition)
+		if (rfcMatch != null) {
+			val raw = rfcMatch.groupValues[1]
+			return try {
+				URLDecoder.decode(raw, "UTF-8")
+			} catch (_: Exception) {
+				raw
+			}
 		}
+		// 2. Check quoted filename="..."
+		val quotedMatch = """filename\s*=\s*"([^"]+)"""".toRegex(RegexOption.IGNORE_CASE).find(contentDisposition)
+		if (quotedMatch != null) {
+			val raw = quotedMatch.groupValues[1]
+			return try {
+				URLDecoder.decode(raw, "UTF-8")
+			} catch (_: Exception) {
+				raw
+			}
+		}
+		// 3. Check unquoted filename=...
+		val tokenMatch = """filename\s*=\s*([^;\s]+)""".toRegex(RegexOption.IGNORE_CASE).find(contentDisposition)
+		if (tokenMatch != null) {
+			val raw = tokenMatch.groupValues[1].trim('"', '\'')
+			return try {
+				URLDecoder.decode(raw, "UTF-8")
+			} catch (_: Exception) {
+				raw
+			}
+		}
+		return null
 	}
 
 	private fun downloadFileToUri(url: String, destination: Uri) {
@@ -352,6 +406,7 @@ class WebViewActivity : ComponentActivity() {
 			try {
 				val connection = URL(url).openConnection() as HttpURLConnection
 				connection.connectTimeout = 5000
+				applyAuthAndCookies(connection, url)
 				connection.connect()
 
 				if (connection.responseCode == HttpURLConnection.HTTP_OK) {
