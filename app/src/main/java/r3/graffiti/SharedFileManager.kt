@@ -37,69 +37,25 @@ object SharedFileManager {
 		val type = intent.type ?: "*/*"
 		val newItems = mutableListOf<SharedItem>()
 
-		if (Intent.ACTION_SEND == action) {
-			val uri = try {
-				intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-			} catch (_: Exception) {
-				null
-			}
-			val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+		if (Intent.ACTION_SEND == action || Intent.ACTION_SEND_MULTIPLE == action) {
+			val sharedText = extractSharedText(intent)
+			val fileUris = extractFileUris(intent)
 
-			if (uri != null) {
-				newItems.add(createSharedItemFromUri(context, uri, type))
+			val isLinkWithPreview = fileUris.size == 1 && !sharedText.isNullOrBlank() &&
+				(sharedText.contains("http://", ignoreCase = true) || sharedText.contains("https://", ignoreCase = true))
+
+			if (isLinkWithPreview) {
+				// Mixed link share: Web link accompanied by a single generated preview thumbnail image.
+				// Extract the text only (the URL) and drop the preview thumbnail.
+				newItems.add(SharedItem(text = sharedText))
 			} else {
-				// Fallback: check if sender provided an ArrayList in EXTRA_STREAM with ACTION_SEND
-				val uris = try {
-					intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-				} catch (_: Exception) {
-					null
-				}
-				if (!uris.isNullOrEmpty()) {
-					for (u in uris) {
-						newItems.add(createSharedItemFromUri(context, u, type))
-					}
-				} else if (intent.clipData != null && intent.clipData!!.itemCount > 0) {
-					val clip = intent.clipData!!
-					var foundUri = false
-					for (i in 0 until clip.itemCount) {
-						clip.getItemAt(i).uri?.let { u ->
-							newItems.add(createSharedItemFromUri(context, u, type))
-							foundUri = true
-						}
-					}
-					if (!foundUri && !text.isNullOrBlank()) {
-						newItems.add(SharedItem(text = text))
-					}
-				} else if (!text.isNullOrBlank()) {
-					newItems.add(SharedItem(text = text))
-				}
-			}
-		} else if (Intent.ACTION_SEND_MULTIPLE == action) {
-			val uris = try {
-				intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-			} catch (_: Exception) {
-				null
-			}
-			if (!uris.isNullOrEmpty()) {
-				for (u in uris) {
+				// File share (single file or multiple files creating a pack)
+				for (u in fileUris) {
 					newItems.add(createSharedItemFromUri(context, u, type))
 				}
-			} else {
-				// Fallback: single uri in EXTRA_STREAM or clipData
-				val uri = try {
-					intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-				} catch (_: Exception) {
-					null
-				}
-				if (uri != null) {
-					newItems.add(createSharedItemFromUri(context, uri, type))
-				} else if (intent.clipData != null && intent.clipData!!.itemCount > 0) {
-					val clip = intent.clipData!!
-					for (i in 0 until clip.itemCount) {
-						clip.getItemAt(i).uri?.let { u ->
-							newItems.add(createSharedItemFromUri(context, u, type))
-						}
-					}
+				// If accompanying text is present (e.g. caption), also include it
+				if (!sharedText.isNullOrBlank()) {
+					newItems.add(SharedItem(text = sharedText))
 				}
 			}
 		}
@@ -110,6 +66,92 @@ object SharedFileManager {
 			return true
 		}
 		return false
+	}
+
+	private fun extractSharedText(intent: Intent): String? {
+		// 1. Check EXTRA_TEXT
+		val extraText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim()
+		if (!extraText.isNullOrBlank()) {
+			return extraText
+		}
+
+		// 2. Check ClipData items (text or web URIs)
+		val clip = intent.clipData
+		if (clip != null && clip.itemCount > 0) {
+			val clipTexts = mutableListOf<String>()
+			for (i in 0 until clip.itemCount) {
+				val item = clip.getItemAt(i)
+				val t = item.text?.toString()?.trim()
+				if (!t.isNullOrBlank()) {
+					clipTexts.add(t)
+				} else {
+					val u = item.uri
+					if (u != null && (u.scheme.equals("http", ignoreCase = true) || u.scheme.equals("https", ignoreCase = true))) {
+						clipTexts.add(u.toString())
+					}
+				}
+			}
+			if (clipTexts.isNotEmpty()) {
+				return clipTexts.joinToString("\n")
+			}
+		}
+
+		// 3. Check Intent data (web URL)
+		val dataUri = intent.data
+		if (dataUri != null && (dataUri.scheme.equals("http", ignoreCase = true) || dataUri.scheme.equals("https", ignoreCase = true))) {
+			return dataUri.toString().trim()
+		}
+
+		return null
+	}
+
+	private fun extractFileUris(intent: Intent): List<Uri> {
+		val uris = mutableListOf<Uri>()
+
+		fun isFileUri(uri: Uri?): Boolean {
+			if (uri == null) return false
+			val scheme = uri.scheme?.lowercase() ?: return false
+			return scheme != "http" && scheme != "https"
+		}
+
+		// 1. Single EXTRA_STREAM
+		val singleUri = try {
+			intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+		} catch (_: Exception) {
+			null
+		}
+		if (isFileUri(singleUri)) {
+			uris.add(singleUri!!)
+		}
+
+		// 2. Multiple EXTRA_STREAM
+		val arrayUris = try {
+			intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+		} catch (_: Exception) {
+			null
+		}
+		if (!arrayUris.isNullOrEmpty()) {
+			for (u in arrayUris) {
+				if (isFileUri(u) && !uris.contains(u)) {
+					uris.add(u)
+				}
+			}
+		}
+
+		// 3. ClipData URIs (if no EXTRA_STREAM found)
+		if (uris.isEmpty()) {
+			val clip = intent.clipData
+			if (clip != null && clip.itemCount > 0) {
+				for (i in 0 until clip.itemCount) {
+					val u = clip.getItemAt(i).uri
+					if (isFileUri(u) && !uris.contains(u)) {
+						uris.add(u)
+					}
+				}
+			}
+		}
+
+		return uris
 	}
 
 	private fun createSharedItemFromUri(context: Context, uri: Uri, fallbackType: String): SharedItem {
