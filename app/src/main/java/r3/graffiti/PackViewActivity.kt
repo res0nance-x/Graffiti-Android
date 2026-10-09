@@ -354,7 +354,7 @@ class PackViewActivity : ComponentActivity() {
 			}
 
 			try {
-				loadedPack.size
+				loadedPack.count()
 			} catch (e: Exception) {
 				throw IllegalArgumentException("INVALID_PASSWORD")
 			}

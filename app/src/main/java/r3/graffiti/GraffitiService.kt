@@ -68,9 +68,7 @@ class GraffitiService : Service() {
 		@Volatile
 		var startupKey: Key128? = null
 			private set
-
 		private var authHandler: AuthorizationHandler? = null
-
 		val authToken: String?
 			get() = authHandler?.authSecret?.arr?.toHexString()
 
@@ -84,7 +82,6 @@ class GraffitiService : Service() {
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
 	private var bellPlayer: AndroidBellPlayer? = null
-
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
@@ -150,11 +147,6 @@ class GraffitiService : Service() {
 			}
 			val p2p = GraffitiP2P(dataDir, false)
 			this.p2p = p2p
-			val apiListener = p2p.onMessageReceived
-			p2p.onMessageReceived = { encKey ->
-				apiListener?.invoke(encKey)
-				messageCount++
-			}
 			val server = WebServer(
 				"localhost",
 				0,
@@ -188,7 +180,7 @@ class GraffitiService : Service() {
 						}
 
 						try {
-							pack.size
+							pack.count()
 						} catch (_: Exception) {
 							throw IllegalArgumentException("INVALID_PASSWORD")
 						}
@@ -230,14 +222,29 @@ class GraffitiService : Service() {
 					}
 					onGetVersion = {
 						try {
-							val pInfo = packageManager.getPackageInfo(packageName, 0)
-							val time = pInfo.lastUpdateTime.takeIf { it > 0L }
-								?: runCatching { java.io.File(packageResourcePath).lastModified() }.getOrNull()?.takeIf { it > 0L }
-								?: System.currentTimeMillis()
-							java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
-								.format(java.util.Date(time))
+							assets.open("build-date.txt").bufferedReader().use { it.readText().trim() }
+								.takeIf { it.isNotEmpty() }
+								?: run {
+									val pInfo = packageManager.getPackageInfo(packageName, 0)
+									val time = pInfo.lastUpdateTime.takeIf { it > 0L }
+										?: runCatching { java.io.File(packageResourcePath).lastModified() }.getOrNull()
+											?.takeIf { it > 0L }
+										?: System.currentTimeMillis()
+									java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
+										.format(java.util.Date(time))
+								}
 						} catch (_: Exception) {
-							"Unknown"
+							try {
+								val pInfo = packageManager.getPackageInfo(packageName, 0)
+								val time = pInfo.lastUpdateTime.takeIf { it > 0L }
+									?: runCatching { java.io.File(packageResourcePath).lastModified() }.getOrNull()
+										?.takeIf { it > 0L }
+									?: System.currentTimeMillis()
+								java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
+									.format(java.util.Date(time))
+							} catch (_: Exception) {
+								"Unknown"
+							}
 						}
 					}
 				}
@@ -246,6 +253,11 @@ class GraffitiService : Service() {
 				handlers.add(AssetRouter(this@GraffitiService))
 				tempFileManagerFactory = CustomTempFileManagerFactory { p2p.tmpDir }
 				start(0, true)
+			}
+			val apiListener = p2p.onMessageReceived
+			p2p.onMessageReceived = { encKey ->
+				apiListener?.invoke(encKey)
+				messageCount++
 			}
 			port = server.listeningPort
 			webserver = server
@@ -262,7 +274,8 @@ class GraffitiService : Service() {
 		try {
 			bellPlayer?.release()
 			bellPlayer = null
-		} catch (_: Exception) {}
+		} catch (_: Exception) {
+		}
 		try {
 			multicastLock?.let {
 				if (it.isHeld) {

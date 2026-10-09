@@ -1,3 +1,5 @@
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Properties
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.OutputFile
@@ -108,4 +110,29 @@ if (providers.gradleProperty("forceIncrement").isPresent) {
 	tasks.named("preBuild") {
 		dependsOn(autoIncrementTask)
 	}
+}
+
+abstract class GenerateBuildDateTask : DefaultTask() {
+	@get:OutputFile
+	abstract val buildDateFile: RegularFileProperty
+
+	@TaskAction
+	fun generate() {
+		val file = buildDateFile.get().asFile
+		val now = ZonedDateTime.now()
+		val formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd:HH"))
+		if (!file.exists() || file.readText().trim() != formatted) {
+			file.parentFile?.mkdirs()
+			file.writeText("$formatted\n")
+			println("Updated build-date.txt to: $formatted")
+		}
+	}
+}
+
+val generateBuildDateTask = tasks.register<GenerateBuildDateTask>("generateBuildDate") {
+	buildDateFile.set(file("D:/IdeaProjects/GraffitiCore/src/main/resources/web/build-date.txt"))
+}
+
+tasks.named("preBuild") {
+	dependsOn(generateBuildDateTask)
 }
