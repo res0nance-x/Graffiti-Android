@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.RingtoneManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.IBinder
@@ -144,6 +145,15 @@ class GraffitiService : Service() {
 				return false
 			}
 			val p2p = GraffitiP2P(dataDir, false)
+			p2p.addOnMessageReceivedListener { key->
+				try {
+					val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+					val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
+					ringtone.play()
+				} catch (e: Exception) {
+					e.printStackTrace()
+				}
+			}
 			this.p2p = p2p
 			val server = WebServer(
 				"localhost",
