@@ -38,24 +38,26 @@ object SharedFileManager {
 		val newItems = mutableListOf<SharedItem>()
 
 		if (Intent.ACTION_SEND == action || Intent.ACTION_SEND_MULTIPLE == action) {
-			val sharedText = extractSharedText(intent)
-			val fileUris = extractFileUris(intent)
-
-			val isLinkWithPreview = fileUris.size == 1 && !sharedText.isNullOrBlank() &&
-				(sharedText.contains("http://", ignoreCase = true) || sharedText.contains("https://", ignoreCase = true))
-
-			if (isLinkWithPreview) {
-				// Mixed link share: Web link accompanied by a single generated preview thumbnail image.
-				// Extract the text only (the URL) and drop the preview thumbnail.
-				newItems.add(SharedItem(text = sharedText))
-			} else {
-				// File share (single file or multiple files creating a pack)
-				for (u in fileUris) {
-					newItems.add(createSharedItemFromUri(context, u, type))
-				}
-				// If accompanying text is present (e.g. caption), also include it
+			if (type.startsWith("text/", ignoreCase = true)) {
+				// Text / Link share: extract text only, ignoring any preview thumbnail in ClipData
+				val sharedText = extractSharedText(intent)
 				if (!sharedText.isNullOrBlank()) {
 					newItems.add(SharedItem(text = sharedText))
+				}
+			} else {
+				// File / Media share (image/*, video/*, audio/*, application/*, etc.):
+				// Extract file streams and ignore any accompanying text / captions / attached URLs
+				val fileUris = extractFileUris(intent)
+				if (fileUris.isNotEmpty()) {
+					for (u in fileUris) {
+						newItems.add(createSharedItemFromUri(context, u, type))
+					}
+				} else {
+					// Fallback if no file stream was found (e.g. unstated or wildcard */* type without EXTRA_STREAM)
+					val sharedText = extractSharedText(intent)
+					if (!sharedText.isNullOrBlank()) {
+						newItems.add(SharedItem(text = sharedText))
+					}
 				}
 			}
 		}

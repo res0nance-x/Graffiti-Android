@@ -81,11 +81,9 @@ class GraffitiService : Service() {
 	private var p2p: GraffitiP2P? = null
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
-	private var bellPlayer: AndroidBellPlayer? = null
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
-		bellPlayer = AndroidBellPlayer(applicationContext)
 	}
 
 	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -165,7 +163,7 @@ class GraffitiService : Service() {
 						sendToAllWebSockets(json.toString())
 					}
 				).apply {
-					onOpenPack = { source, fileName, password ->
+					addOnOpenPackListener { source, fileName, password ->
 						val isEncrypted = fileName.endsWith(".epack", ignoreCase = true) || !password.isNullOrEmpty()
 						if (isEncrypted && password.isNullOrEmpty()) {
 							throw IllegalArgumentException("PASSWORD_REQUIRED")
@@ -202,14 +200,14 @@ class GraffitiService : Service() {
 						}
 						Pair(java.util.UUID.randomUUID().toString(), port)
 					}
-					onClosePack = { _ ->
+					addOnClosePackListener { _ ->
 						val stopIntent = Intent(this@GraffitiService, PackMediaPlaybackService::class.java).apply {
 							action = PackMediaPlaybackService.ACTION_STOP
 						}
 						startService(stopIntent)
 					}
 
-					onOpenUrl = { url ->
+					addOnOpenUrlListener { url ->
 						try {
 							val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
 								addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -220,7 +218,7 @@ class GraffitiService : Service() {
 							false
 						}
 					}
-					onGetVersion = {
+					addOnGetVersionListener {
 						try {
 							assets.open("build-date.txt").bufferedReader().use { it.readText().trim() }
 								.takeIf { it.isNotEmpty() }
@@ -254,9 +252,7 @@ class GraffitiService : Service() {
 				tempFileManagerFactory = CustomTempFileManagerFactory { p2p.tmpDir }
 				start(0, true)
 			}
-			val apiListener = p2p.onMessageReceived
-			p2p.onMessageReceived = { encKey ->
-				apiListener?.invoke(encKey)
+			p2p.addOnMessageReceivedListener {
 				messageCount++
 			}
 			port = server.listeningPort
@@ -271,11 +267,6 @@ class GraffitiService : Service() {
 	}
 
 	private fun cleanup() {
-		try {
-			bellPlayer?.release()
-			bellPlayer = null
-		} catch (_: Exception) {
-		}
 		try {
 			multicastLock?.let {
 				if (it.isHeld) {
