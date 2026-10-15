@@ -412,7 +412,7 @@ class WebViewActivity : ComponentActivity() {
 				if (connection.responseCode == HttpURLConnection.HTTP_OK) {
 					contentResolver.openOutputStream(destination)?.use { output ->
 						connection.inputStream.use { input ->
-							input.copyTo(output)
+							input.copyTo(output, r3.io.DEFAULT_COPY_BUFFER_SIZE)
 						}
 					}
 					withContext(Dispatchers.Main) {

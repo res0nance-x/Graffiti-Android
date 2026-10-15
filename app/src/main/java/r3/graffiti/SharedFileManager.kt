@@ -305,7 +305,7 @@ object SharedFileManager {
 
 				context.contentResolver.openInputStream(item.uri!!)?.use { input ->
 					fileConn.outputStream.use { output ->
-						input.copyTo(output)
+						input.copyTo(output, r3.io.DEFAULT_COPY_BUFFER_SIZE)
 					}
 				} ?: throw Exception("Cannot open stream for ${item.name}")
 
@@ -379,7 +379,7 @@ object SharedFileManager {
 
 		context.contentResolver.openInputStream(item.uri!!)?.use { input ->
 			conn.outputStream.use { output ->
-				input.copyTo(output)
+				input.copyTo(output, r3.io.DEFAULT_COPY_BUFFER_SIZE)
 			}
 		} ?: throw Exception("Cannot open file stream")
 
