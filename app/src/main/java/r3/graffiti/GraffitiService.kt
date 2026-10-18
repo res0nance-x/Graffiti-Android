@@ -145,13 +145,16 @@ class GraffitiService : Service() {
 				return false
 			}
 			val p2p = GraffitiP2P(dataDir, false)
-			p2p.addOnMessageReceivedListener { key->
-				try {
-					val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-					val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
-					ringtone.play()
-				} catch (e: Exception) {
-					e.printStackTrace()
+			val soundDebouncer = SoundDebouncer()
+			p2p.addOnMessageReceivedListener { key ->
+				soundDebouncer.tryTrigger {
+					try {
+						val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+						val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
+						ringtone.play()
+					} catch (e: Exception) {
+						e.printStackTrace()
+					}
 				}
 			}
 			this.p2p = p2p
