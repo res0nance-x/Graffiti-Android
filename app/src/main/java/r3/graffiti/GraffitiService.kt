@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.media.RingtoneManager
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Environment
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
@@ -54,9 +55,6 @@ class GraffitiService : Service() {
 		const val ACTION_STOP_SERVICE = "r3.graffiti.ACTION_STOP_SERVICE"
 		private const val NOTIFICATION_ID = 1
 		private const val CHANNEL_ID = "graffiti_service_channel"
-
-		@Volatile
-		private var running = false
 
 		@Volatile
 		var port: Int = 0
@@ -126,10 +124,7 @@ class GraffitiService : Service() {
 			}
 		}
 
-		if (startServer()) {
-			running = true
-		} else {
-			running = false
+		if (!startServer()) {
 			stopSelf()
 		}
 		return START_STICKY
@@ -145,6 +140,11 @@ class GraffitiService : Service() {
 				return false
 			}
 			val p2p = GraffitiP2P(dataDir, false)
+			val extDownloads = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+				?: Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+			if (extDownloads != null) {
+				p2p.defaultDownloadsDir = extDownloads
+			}
 			val soundDebouncer = SoundDebouncer()
 			p2p.addOnMessageReceivedListener { key ->
 				soundDebouncer.tryTrigger {
@@ -316,7 +316,6 @@ class GraffitiService : Service() {
 		p2p = null
 		authHandler = null
 		startupKey = null
-		running = false
 		port = 0
 	}
 
@@ -330,7 +329,7 @@ class GraffitiService : Service() {
 		val serviceChannel = NotificationChannel(
 			CHANNEL_ID,
 			"Graffiti Service Channel",
-			NotificationManager.IMPORTANCE_LOW
+			NotificationManager.IMPORTANCE_DEFAULT
 		)
 		val manager = getSystemService(NotificationManager::class.java)
 		manager.createNotificationChannel(serviceChannel)
@@ -357,6 +356,7 @@ class GraffitiService : Service() {
 			.setContentIntent(mainActivityPendingIntent)
 			.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
 			.setOngoing(true)
+			.setPriority(NotificationCompat.PRIORITY_DEFAULT)
 			.setCategory(Notification.CATEGORY_SERVICE)
 			.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
 			.build()

@@ -31,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
@@ -63,6 +64,33 @@ class WebViewActivity : ComponentActivity() {
 					startActivity(intent)
 				} catch (e: Exception) {
 					Toast.makeText(this@WebViewActivity, "Failed to open link: ${e.message}", Toast.LENGTH_SHORT).show()
+				}
+			}
+		}
+
+		@JavascriptInterface
+		fun openFile(filePath: String) {
+			runOnUiThread {
+				try {
+					val file = File(filePath)
+					if (!file.exists()) {
+						Toast.makeText(this@WebViewActivity, "File not found: ${file.name}", Toast.LENGTH_SHORT).show()
+						return@runOnUiThread
+					}
+					val uri = androidx.core.content.FileProvider.getUriForFile(
+						this@WebViewActivity,
+						"${packageName}.fileprovider",
+						file
+					)
+					val mime = contentResolver.getType(uri) ?: "*/*"
+					val intent = Intent(Intent.ACTION_VIEW).apply {
+						setDataAndType(uri, mime)
+						addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+						addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+					}
+					startActivity(Intent.createChooser(intent, "Open with..."))
+				} catch (e: Exception) {
+					Toast.makeText(this@WebViewActivity, "Failed to open file: ${e.message}", Toast.LENGTH_SHORT).show()
 				}
 			}
 		}
