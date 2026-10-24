@@ -2,6 +2,7 @@ package r3.graffiti
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -12,6 +13,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -94,6 +96,13 @@ class WebViewActivity : ComponentActivity() {
 				}
 			}
 		}
+
+		@JavascriptInterface
+		fun stopService() {
+			runOnUiThread {
+				stopGraffitiService()
+			}
+		}
 	}
 
 	private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -134,6 +143,7 @@ class WebViewActivity : ComponentActivity() {
 	private var webView: WebView? = null
 	private lateinit var rootLayout: FrameLayout
 	private lateinit var loadingLayout: LinearLayout
+	private lateinit var entryLayout: LinearLayout
 
 	override fun onCreate(savedInstanceState: Bundle?) {
 		enableEdgeToEdge()
@@ -149,10 +159,21 @@ class WebViewActivity : ComponentActivity() {
 		waitForServiceAndLoad()
 	}
 
+	override fun onResume() {
+		super.onResume()
+		if (GraffitiService.port == 0 && loadingLayout.visibility != View.VISIBLE) {
+			entryLayout.visibility = View.VISIBLE
+			webView?.visibility = View.GONE
+		}
+	}
+
 	override fun onNewIntent(intent: Intent) {
 		super.onNewIntent(intent)
 		setIntent(intent)
-		SharedFileManager.handleIntent(this, intent)
+		val handled = SharedFileManager.handleIntent(this, intent)
+		if (handled && GraffitiService.port == 0) {
+			promptStartServiceForShare()
+		}
 	}
 
 	@SuppressLint("SetJavaScriptEnabled")
@@ -193,6 +214,48 @@ class WebViewActivity : ComponentActivity() {
 			addView(textView)
 		}
 		rootLayout.addView(loadingLayout)
+
+		entryLayout = LinearLayout(this).apply {
+			orientation = LinearLayout.VERTICAL
+			gravity = Gravity.CENTER
+			layoutParams = FrameLayout.LayoutParams(
+				FrameLayout.LayoutParams.MATCH_PARENT,
+				FrameLayout.LayoutParams.MATCH_PARENT
+			)
+			visibility = View.GONE
+			setPadding(64, 64, 64, 64)
+
+			val titleView = TextView(this@WebViewActivity).apply {
+				text = "Graffiti"
+				setTextColor(Color.WHITE)
+				textSize = 28f
+				gravity = Gravity.CENTER
+				typeface = android.graphics.Typeface.DEFAULT_BOLD
+			}
+
+			val statusView = TextView(this@WebViewActivity).apply {
+				text = "Graffiti Service is stopped"
+				setTextColor(Color.LTGRAY)
+				textSize = 15f
+				gravity = Gravity.CENTER
+				setPadding(0, 16, 0, 36)
+			}
+
+			val startButton = Button(this@WebViewActivity).apply {
+				text = "Start Graffiti Service"
+				setBackgroundColor(Color.parseColor("#2196F3"))
+				setTextColor(Color.WHITE)
+				setPadding(48, 24, 48, 24)
+				setOnClickListener {
+					startServiceAndLoad()
+				}
+			}
+
+			addView(titleView)
+			addView(statusView)
+			addView(startButton)
+		}
+		rootLayout.addView(entryLayout)
 
 		val wv = WebView(this).apply {
 			layoutParams = FrameLayout.LayoutParams(
@@ -309,11 +372,42 @@ class WebViewActivity : ComponentActivity() {
 				"http://localhost:${GraffitiService.port}/"
 			}
 			loadingLayout.visibility = View.GONE
+			entryLayout.visibility = View.GONE
 			webView?.apply {
 				visibility = View.VISIBLE
 				loadUrl(url)
 			}
 		}
+	}
+
+	private fun startServiceAndLoad() {
+		entryLayout.visibility = View.GONE
+		loadingLayout.visibility = View.VISIBLE
+		webView?.visibility = View.GONE
+		startGraffitiService()
+		waitForServiceAndLoad()
+	}
+
+	private fun stopGraffitiService() {
+		val intent = Intent(this, GraffitiService::class.java).apply {
+			action = GraffitiService.ACTION_STOP_SERVICE
+		}
+		startService(intent)
+		loadingLayout.visibility = View.GONE
+		webView?.visibility = View.GONE
+		webView?.loadUrl("about:blank")
+		entryLayout.visibility = View.VISIBLE
+	}
+
+	private fun promptStartServiceForShare() {
+		AlertDialog.Builder(this)
+			.setTitle("Shared Content Received")
+			.setMessage("Graffiti received shared content. Would you like to start the Graffiti service to process it?")
+			.setPositiveButton("Start Service") { _, _ ->
+				startServiceAndLoad()
+			}
+			.setNegativeButton("Later", null)
+			.show()
 	}
 
 	private fun requestPermissions() {
@@ -335,7 +429,7 @@ class WebViewActivity : ComponentActivity() {
 
 	private fun startGraffitiService() {
 		val intent = Intent(this, GraffitiService::class.java)
-		startService(intent)
+		ContextCompat.startForegroundService(this, intent)
 	}
 
 	private fun applyAuthAndCookies(connection: HttpURLConnection, url: String) {

@@ -55,7 +55,8 @@ class GraffitiService : Service() {
 
 		const val ACTION_STOP_SERVICE = "r3.graffiti.ACTION_STOP_SERVICE"
 		private const val NOTIFICATION_ID = 1
-		private const val CHANNEL_ID = "graffiti_service_channel"
+		private const val OLD_CHANNEL_ID = "graffiti_service_channel"
+		private const val CHANNEL_ID = "graffiti_service_channel_v2"
 
 		@Volatile
 		var port: Int = 0
@@ -352,23 +353,25 @@ class GraffitiService : Service() {
 
 	override fun onBind(intent: Intent?): IBinder? = null
 	private fun createNotificationChannel() {
+		val manager = getSystemService(NotificationManager::class.java)
+		try {
+			manager.deleteNotificationChannel(OLD_CHANNEL_ID)
+		} catch (_: Exception) {}
+
 		val serviceChannel = NotificationChannel(
 			CHANNEL_ID,
 			"Graffiti Service Channel",
-			NotificationManager.IMPORTANCE_DEFAULT
-		)
-		val manager = getSystemService(NotificationManager::class.java)
+			NotificationManager.IMPORTANCE_MIN
+		).apply {
+			description = "Graffiti background service"
+			setShowBadge(false)
+			setSound(null, null)
+			enableVibration(false)
+		}
 		manager.createNotificationChannel(serviceChannel)
 	}
 
 	private fun createNotification(): Notification {
-		val stopIntent = Intent(this, GraffitiService::class.java).apply {
-			action = ACTION_STOP_SERVICE
-		}
-		val stopPendingIntent = PendingIntent.getService(
-			this, 0, stopIntent,
-			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-		)
 		val mainActivityIntent = Intent(this, WebViewActivity::class.java)
 		val mainActivityPendingIntent = PendingIntent.getActivity(
 			this, 0, mainActivityIntent,
@@ -380,9 +383,9 @@ class GraffitiService : Service() {
 			.setContentText("P2P Node is active")
 			.setSmallIcon(android.R.drawable.stat_notify_sync)
 			.setContentIntent(mainActivityPendingIntent)
-			.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
 			.setOngoing(true)
-			.setPriority(NotificationCompat.PRIORITY_DEFAULT)
+			.setSilent(true)
+			.setPriority(NotificationCompat.PRIORITY_MIN)
 			.setCategory(Notification.CATEGORY_SERVICE)
 			.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
 			.build()
