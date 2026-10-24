@@ -13,6 +13,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Environment
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
 import r3.content.Content
@@ -80,6 +81,7 @@ class GraffitiService : Service() {
 	private var p2p: GraffitiP2P? = null
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
+	private var wakeLock: PowerManager.WakeLock? = null
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
@@ -121,6 +123,19 @@ class GraffitiService : Service() {
 				log("WiFi lock acquired")
 			} catch (e: Exception) {
 				log("Failed to acquire WiFi lock: ${e.message}")
+			}
+		}
+
+		if (wakeLock == null) {
+			try {
+				val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
+				wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
+					setReferenceCounted(false)
+					acquire()
+				}
+				log("Wake lock acquired")
+			} catch (e: Exception) {
+				log("Failed to acquire wake lock: ${e.message}")
 			}
 		}
 
@@ -301,6 +316,17 @@ class GraffitiService : Service() {
 			}
 		} catch (e: Exception) {
 			log("Error releasing WiFi lock: ${e.message}")
+		}
+		try {
+			wakeLock?.let {
+				if (it.isHeld) {
+					it.release()
+				}
+				wakeLock = null
+				log("Wake lock released")
+			}
+		} catch (e: Exception) {
+			log("Error releasing wake lock: ${e.message}")
 		}
 		try {
 			webserver?.stop()
