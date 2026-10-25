@@ -9,8 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.RingtoneManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.os.PowerManager
@@ -82,6 +86,8 @@ class GraffitiService : Service() {
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
 	private var wakeLock: PowerManager.WakeLock? = null
+	private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
 	override fun onCreate() {
 		super.onCreate()
 		createNotificationChannel()
@@ -115,7 +121,12 @@ class GraffitiService : Service() {
 		if (wifiLock == null) {
 			try {
 				val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-				val lockMode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
+				val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+					WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+				} else {
+					@Suppress("DEPRECATION")
+					WifiManager.WIFI_MODE_FULL_HIGH_PERF
+				}
 				wifiLock = wifiManager.createWifiLock(lockMode, "GraffitiWifiLock").apply {
 					setReferenceCounted(false)
 					acquire()
@@ -136,6 +147,28 @@ class GraffitiService : Service() {
 				log("Wake lock acquired")
 			} catch (e: Exception) {
 				log("Failed to acquire wake lock: ${e.message}")
+			}
+		}
+
+		if (networkCallback == null) {
+			try {
+				val connectivityManager = applicationContext.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+				val callback = object : ConnectivityManager.NetworkCallback() {
+					override fun onAvailable(network: Network) {
+						log("Network link available - retrying pending connections")
+						p2p?.retryPendingConnectionsImmediately()
+					}
+
+					override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+						if (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+							p2p?.retryPendingConnectionsImmediately()
+						}
+					}
+				}
+				connectivityManager.registerDefaultNetworkCallback(callback)
+				networkCallback = callback
+			} catch (e: Exception) {
+				log("Failed to register network callback: ${e.message}")
 			}
 		}
 
@@ -327,6 +360,15 @@ class GraffitiService : Service() {
 			}
 		} catch (e: Exception) {
 			log("Error releasing wake lock: ${e.message}")
+		}
+		try {
+			networkCallback?.let {
+				val connectivityManager = applicationContext.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+				connectivityManager.unregisterNetworkCallback(it)
+			}
+			networkCallback = null
+		} catch (e: Exception) {
+			log("Error unregistering network callback: ${e.message}")
 		}
 		try {
 			webserver?.stop()
