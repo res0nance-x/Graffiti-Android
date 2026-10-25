@@ -115,20 +115,29 @@ class WebViewActivity : ComponentActivity() {
 		@JavascriptInterface
 		fun openBatterySettings() {
 			runOnUiThread {
+				val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+				val isAlreadyIgnoring = powerManager.isIgnoringBatteryOptimizations(packageName)
+				if (!isAlreadyIgnoring) {
+					try {
+						val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+							data = Uri.fromParts("package", packageName, null)
+						}
+						startActivity(intent)
+						return@runOnUiThread
+					} catch (_: Exception) {}
+				}
+
 				try {
-					val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-						data = Uri.parse("package:$packageName")
-					}
+					val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
 					startActivity(intent)
 				} catch (_: Exception) {
 					try {
-						val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-						startActivity(intent)
-					} catch (_: Exception) {
 						val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-							data = Uri.parse("package:$packageName")
+							data = Uri.fromParts("package", packageName, null)
 						}
 						startActivity(intent)
+					} catch (e: Exception) {
+						Toast.makeText(this@WebViewActivity, "Unable to open battery settings: ${e.message}", Toast.LENGTH_SHORT).show()
 					}
 				}
 			}
