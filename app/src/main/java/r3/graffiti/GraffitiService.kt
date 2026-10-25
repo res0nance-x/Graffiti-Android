@@ -55,8 +55,7 @@ class GraffitiService : Service() {
 
 		const val ACTION_STOP_SERVICE = "r3.graffiti.ACTION_STOP_SERVICE"
 		private const val NOTIFICATION_ID = 1
-		private const val OLD_CHANNEL_ID = "graffiti_service_channel"
-		private const val CHANNEL_ID = "graffiti_service_channel_v2"
+		private const val CHANNEL_ID = "graffiti_service_channel_v3"
 
 		@Volatile
 		var port: Int = 0
@@ -355,13 +354,14 @@ class GraffitiService : Service() {
 	private fun createNotificationChannel() {
 		val manager = getSystemService(NotificationManager::class.java)
 		try {
-			manager.deleteNotificationChannel(OLD_CHANNEL_ID)
+			manager.deleteNotificationChannel("graffiti_service_channel")
+			manager.deleteNotificationChannel("graffiti_service_channel_v2")
 		} catch (_: Exception) {}
 
 		val serviceChannel = NotificationChannel(
 			CHANNEL_ID,
 			"Graffiti Service Channel",
-			NotificationManager.IMPORTANCE_MIN
+			NotificationManager.IMPORTANCE_LOW
 		).apply {
 			description = "Graffiti background service"
 			setShowBadge(false)
@@ -385,7 +385,7 @@ class GraffitiService : Service() {
 			.setContentIntent(mainActivityPendingIntent)
 			.setOngoing(true)
 			.setSilent(true)
-			.setPriority(NotificationCompat.PRIORITY_MIN)
+			.setPriority(NotificationCompat.PRIORITY_LOW)
 			.setCategory(Notification.CATEGORY_SERVICE)
 			.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
 			.build()

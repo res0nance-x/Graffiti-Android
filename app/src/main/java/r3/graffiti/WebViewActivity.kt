@@ -9,6 +9,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -101,6 +103,34 @@ class WebViewActivity : ComponentActivity() {
 		fun stopService() {
 			runOnUiThread {
 				stopGraffitiService()
+			}
+		}
+
+		@JavascriptInterface
+		fun isBatteryOptimized(): Boolean {
+			val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+			return !powerManager.isIgnoringBatteryOptimizations(packageName)
+		}
+
+		@JavascriptInterface
+		fun openBatterySettings() {
+			runOnUiThread {
+				try {
+					val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+						data = Uri.parse("package:$packageName")
+					}
+					startActivity(intent)
+				} catch (_: Exception) {
+					try {
+						val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+						startActivity(intent)
+					} catch (_: Exception) {
+						val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+							data = Uri.parse("package:$packageName")
+						}
+						startActivity(intent)
+					}
+				}
 			}
 		}
 	}
