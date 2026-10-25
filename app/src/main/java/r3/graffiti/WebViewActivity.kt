@@ -194,6 +194,8 @@ class WebViewActivity : ComponentActivity() {
 		if (GraffitiService.port == 0 && loadingLayout.visibility != View.VISIBLE) {
 			entryLayout.visibility = View.VISIBLE
 			webView?.visibility = View.GONE
+		} else {
+			webView?.evaluateJavascript("if (typeof updateBatterySettingsUi === 'function') updateBatterySettingsUi();", null)
 		}
 	}
 
