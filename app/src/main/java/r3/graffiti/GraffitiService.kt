@@ -188,11 +188,6 @@ class GraffitiService : Service() {
 				return false
 			}
 			val p2p = GraffitiP2P(dataDir, false)
-			val extDownloads = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-				?: Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-			if (extDownloads != null) {
-				p2p.defaultDownloadsDir = extDownloads
-			}
 			val soundDebouncer = SoundDebouncer()
 			p2p.addOnMessageReceivedListener { key ->
 				soundDebouncer.tryTrigger {
