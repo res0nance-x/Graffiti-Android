@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
@@ -47,7 +48,11 @@ class PackMediaPlaybackService : Service() {
 		val pack = PackHolder.currentPack
 		if (pack != null) {
 			val notification = createNotification()
-			startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+				startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+			} else {
+				startForeground(NOTIFICATION_ID, notification)
+			}
 			startWebServer(pack)
 		} else {
 			stopSelf()

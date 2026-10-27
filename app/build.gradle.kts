@@ -22,7 +22,7 @@ android {
 
 	defaultConfig {
 		applicationId = "r3.graffiti"
-		minSdk = 35
+		minSdk = 33
 		targetSdk = 37
 		versionCode = buildNumber
 		versionName = buildNumber.toString()

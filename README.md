@@ -73,15 +73,13 @@ graph TD
         NativeBin --> GraffitiPC
     end
 
-    subgraph AndroidApp ["3b. Graffiti Android (Mobile / Android 15+)"]
+    subgraph AndroidApp ["3b. Graffiti Android (Mobile / Android 13+)"]
         GraffitiAndroid["Graffiti Android (Mobile Application)<br/>GraffitiService, PackMediaPlaybackService, Activities"]:::app
-        JetpackCompose["AndroidX Jetpack Compose BOM 2026.06.00<br/>Material3, UI, Tooling, Preview"]:::ext
-        AndroidX["AndroidX Core KTX 1.19.0<br/>Lifecycle 2.11.0, Activity 1.13.0, Browser 1.10.0"]:::ext
+        AndroidX["AndroidX Core KTX 1.19.0<br/>Lifecycle 2.11.0, Activity 1.10.1, Browser 1.10.0"]:::ext
         
         GraffitiCore -->|sourceSets java.srcDirs| GraffitiAndroid
         R3 -->|sourceSets java.srcDirs| GraffitiAndroid
         WebAssets -.->|sourceSets assets.srcDirs| GraffitiAndroid
-        JetpackCompose --> GraffitiAndroid
         AndroidX --> GraffitiAndroid
     end
 ```
@@ -135,7 +133,7 @@ A standalone Windows desktop application packaged as an app-image using `jpackag
 ---
 
 #### 4. Mobile Application: Graffiti-Android
-An Android application (minSdk 35, targetSdk 37, compileSdk 37) utilizing Jetpack Compose and foreground services.
+An Android application (minSdk 33, targetSdk 37, compileSdk 37) utilizing WebViews and foreground services.
 
 * **Linkage to `R3` and `GraffitiCore`**:
   Instead of Gradle composite builds or JAR artifacts, the Android project **directly compiles the Kotlin source trees and mounts the web assets**:
@@ -158,21 +156,15 @@ An Android application (minSdk 35, targetSdk 37, compileSdk 37) utilizing Jetpac
   * **AndroidX & Architecture**:
     * `androidx.core:core-ktx:1.19.0`
     * `androidx.lifecycle:lifecycle-runtime-ktx:2.11.0`
-    * `androidx.activity:activity-compose:1.13.0`
+    * `androidx.activity:activity-ktx:1.10.1`
     * `androidx.browser:browser:1.10.0` (Custom Tabs)
-  * **Jetpack Compose UI (via BOM `2026.06.00`)**:
-    * `androidx.compose.ui:ui`
-    * `androidx.compose.ui:ui-graphics`
-    * `androidx.compose.material3:material3`
-    * `androidx.compose.ui:ui-tooling-preview` / `ui-tooling`
   * **Testing**:
     * `junit:junit:4.13.2`
     * `androidx.test.ext:junit:1.3.0`
     * `androidx.test.espresso:espresso-core:3.7.0`
-    * `androidx.compose.ui:ui-test-junit4`
 * **Android-Specific Subsystems**:
   * Graffiti-Android/app/src/main/java/r3/graffiti/GraffitiService.kt: Foreground service keeping `GraffitiP2P` and local `WebServer` alive with WiFi locks and notification management.
   * Graffiti-Android/app/src/main/java/r3/graffiti/PackMediaPlaybackService.kt: Background playback service for streaming pack media.
   * Graffiti-Android/app/src/main/java/r3/graffiti/WebViewActivity.kt: Fullscreen WebView rendering `index.html` from assets.
-  * Graffiti-Android/app/src/main/java/r3/graffiti/PackViewActivity.kt: Native Compose UI for inspecting and downloading packs.
+  * Graffiti-Android/app/src/main/java/r3/graffiti/PackViewActivity.kt: View and WebView UI for inspecting and downloading packs.
   * Graffiti-Android/app/src/main/java/r3/graffiti/UriSource.kt: Android Storage Access Framework (SAF) adapter for R3 streaming.
