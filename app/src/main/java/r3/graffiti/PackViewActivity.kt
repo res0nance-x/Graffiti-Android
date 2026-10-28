@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.text.InputType
+import android.view.ContextMenu
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -31,7 +32,9 @@ import r3.encryption.EncryptedSource
 import r3.hash.hash256
 import r3.math.EncryptedSequence
 import r3.pack.BinaryPack
+import r3.pack.MhtmlPack
 import r3.pack.Pack
+import r3.pack.ZipPack
 import r3.pke.Password256
 import r3.source.FileSource
 import r3.source.Source
@@ -195,6 +198,7 @@ class PackViewActivity : ComponentActivity() {
 			}
 		}
 		rootLayout.addView(webView)
+		registerForContextMenu(webView)
 
 		setContentView(rootLayout)
 	}
@@ -204,12 +208,43 @@ class PackViewActivity : ComponentActivity() {
 			override fun handleOnBackPressed() {
 				if (customView != null) {
 					customViewCallback?.onCustomViewHidden()
+				} else if (webView.canGoBack()) {
+					webView.goBack()
 				} else {
 					stopPlaybackService()
 					finish()
 				}
 			}
 		})
+	}
+
+	override fun onCreateContextMenu(menu: ContextMenu, v: View, menuInfo: ContextMenu.ContextMenuInfo?) {
+		super.onCreateContextMenu(menu, v, menuInfo)
+		if (v == webView) {
+			val result = webView.hitTestResult
+			val extra = result.extra
+			when (result.type) {
+				WebView.HitTestResult.IMAGE_TYPE,
+				WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+					if (extra != null) {
+						menu.setHeaderTitle(extra.substringAfterLast('/'))
+						menu.add(0, 1, 0, "View Image").setOnMenuItemClickListener {
+							webView.loadUrl(extra)
+							true
+						}
+					}
+				}
+				WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+					if (extra != null) {
+						menu.setHeaderTitle(extra.substringAfterLast('/'))
+						menu.add(0, 2, 0, "Open Link").setOnMenuItemClickListener {
+							webView.loadUrl(extra)
+							true
+						}
+					}
+				}
+			}
+		}
 	}
 
 	private fun initiatePackLoad() {
@@ -349,14 +384,20 @@ class PackViewActivity : ComponentActivity() {
 				val sequence = EncryptedSequence.createSequence(pass)
 				val encryptedSrc = EncryptedSource(sequence, source)
 				BinaryPack(encryptedSrc)
+			} else if (fileName.endsWith(".mhtml", ignoreCase = true) || fileName.endsWith(".mht", ignoreCase = true)) {
+				MhtmlPack(source)
+			} else if (fileName.endsWith(".zip", ignoreCase = true)) {
+				ZipPack(source)
 			} else {
 				BinaryPack(source)
 			}
 
-			try {
-				loadedPack.count()
-			} catch (e: Exception) {
-				throw IllegalArgumentException("INVALID_PASSWORD")
+			if (isEncrypted) {
+				try {
+					loadedPack.count()
+				} catch (e: Exception) {
+					throw IllegalArgumentException("INVALID_PASSWORD")
+				}
 			}
 
 			loadedPack

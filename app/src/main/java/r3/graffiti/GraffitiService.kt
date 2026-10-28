@@ -233,14 +233,20 @@ class GraffitiService : Service() {
 							val sequence = r3.math.EncryptedSequence.createSequence(pass)
 							val encryptedSrc = r3.encryption.EncryptedSource(sequence, source)
 							r3.pack.BinaryPack(encryptedSrc)
+						} else if (fileName.endsWith(".mhtml", ignoreCase = true) || fileName.endsWith(".mht", ignoreCase = true)) {
+							r3.pack.MhtmlPack(source)
+						} else if (fileName.endsWith(".zip", ignoreCase = true)) {
+							r3.pack.ZipPack(source)
 						} else {
 							r3.pack.BinaryPack(source)
 						}
 
-						try {
-							pack.count()
-						} catch (_: Exception) {
-							throw IllegalArgumentException("INVALID_PASSWORD")
+						if (isEncrypted) {
+							try {
+								pack.count()
+							} catch (_: Exception) {
+								throw IllegalArgumentException("INVALID_PASSWORD")
+							}
 						}
 
 						PackHolder.currentPack = pack

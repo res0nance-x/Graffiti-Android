@@ -140,6 +140,12 @@ class PackMediaPlaybackService : Service() {
 		} catch (_: Exception) {
 		}
 		webServer = null
+		val pack = PackHolder.currentPack
+		if (pack is AutoCloseable) {
+			try {
+				pack.close()
+			} catch (_: Exception) {}
+		}
 		PackHolder.currentPack = null
 		PackHolder.listeningPort = 0
 	}

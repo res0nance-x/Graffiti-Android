@@ -96,6 +96,9 @@
                 <data android:mimeType="*/*" />
                 <data android:pathPattern=".*\\.pack" />
                 <data android:pathPattern=".*\\.epack" />
+                <data android:pathPattern=".*\\.mhtml" />
+                <data android:pathPattern=".*\\.mht" />
+                <data android:pathPattern=".*\\.zip" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -103,6 +106,10 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
                 <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="multipart/related" />
+                <data android:mimeType="message/rfc822" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
             </intent-filter>
         </activity>
     </application>
