@@ -22,6 +22,8 @@ object PackHolder {
 	var currentPackName: String = "Pack Viewer"
 	@Volatile
 	var listeningPort: Int = 0
+	@Volatile
+	var onServiceStopped: (() -> Unit)? = null
 }
 
 class PackMediaPlaybackService : Service() {
@@ -148,5 +150,6 @@ class PackMediaPlaybackService : Service() {
 		}
 		PackHolder.currentPack = null
 		PackHolder.listeningPort = 0
+		PackHolder.onServiceStopped?.invoke()
 	}
 }

@@ -59,10 +59,28 @@ class PackViewActivity : ComponentActivity() {
 		enableEdgeToEdge()
 		super.onCreate(savedInstanceState)
 
+		PackHolder.onServiceStopped = {
+			runOnUiThread {
+				if (!isFinishing && !isDestroyed) {
+					finish()
+				}
+			}
+		}
+
 		handleIntent(intent)
 		setupViews()
 		setupBackNavigation()
 		initiatePackLoad()
+	}
+
+	override fun onPause() {
+		super.onPause()
+		if (::webView.isInitialized) {
+			webView.evaluateJavascript(
+				"if (typeof onHostPause === 'function') onHostPause(); else { document.querySelectorAll('video').forEach(v => v.pause()); }",
+				null
+			)
+		}
 	}
 
 	override fun onNewIntent(intent: Intent) {
@@ -150,7 +168,10 @@ class PackViewActivity : ComponentActivity() {
 			}
 			val closeButton = Button(this@PackViewActivity).apply {
 				text = "Close"
-				setOnClickListener { finish() }
+				setOnClickListener {
+					stopPlaybackService()
+					finish()
+				}
 			}
 
 			addView(errorTextView)
@@ -446,6 +467,10 @@ class PackViewActivity : ComponentActivity() {
 	}
 
 	override fun onDestroy() {
+		PackHolder.onServiceStopped = null
+		if (isFinishing) {
+			stopPlaybackService()
+		}
 		super.onDestroy()
 		webView.apply {
 			stopLoading()

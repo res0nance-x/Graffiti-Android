@@ -83,10 +83,95 @@ class GraffitiService : Service() {
 
 	private var webserver: WebServer? = null
 	private var p2p: GraffitiP2P? = null
+	private var api: GraffitiAPI? = null
+	private val lockMutex = Any()
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
 	private var wakeLock: PowerManager.WakeLock? = null
 	private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+	private fun updateMulticastLock(needed: Boolean) {
+		synchronized(lockMutex) {
+			try {
+				if (needed) {
+					if (multicastLock == null) {
+						val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+						multicastLock = wifiManager.createMulticastLock("GraffitiMulticastLock").apply {
+							setReferenceCounted(false)
+						}
+					}
+					if (multicastLock?.isHeld == false) {
+						multicastLock?.acquire()
+						log("Multicast lock acquired")
+					}
+				} else {
+					if (multicastLock?.isHeld == true) {
+						multicastLock?.release()
+						log("Multicast lock released")
+					}
+				}
+			} catch (e: Exception) {
+				log("Error updating multicast lock: ${e.message}")
+			}
+		}
+	}
+
+	private fun updateTransferLocks(graceTimeoutMs: Long = 0L) {
+		synchronized(lockMutex) {
+			val active = (p2p?.isAnyTransferActive() == true) || (api?.stateManager?.isEncoding() == true)
+			try {
+				if (active) {
+					if (wakeLock == null) {
+						val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
+						wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
+							setReferenceCounted(false)
+						}
+					}
+					val wasHeld = wakeLock?.isHeld == true
+					wakeLock?.acquire(15 * 60 * 1000L)
+					if (!wasHeld) {
+						log("Transfer wake lock acquired")
+					}
+
+					if (wifiLock == null) {
+						val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+						val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+							WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+						} else {
+							@Suppress("DEPRECATION")
+							WifiManager.WIFI_MODE_FULL_HIGH_PERF
+						}
+						wifiLock = wifiManager.createWifiLock(lockMode, "GraffitiWifiLock").apply {
+							setReferenceCounted(false)
+						}
+					}
+					if (wifiLock?.isHeld == false) {
+						wifiLock?.acquire()
+						log("Transfer WiFi lock acquired")
+					}
+				} else if (graceTimeoutMs > 0L) {
+					if (wakeLock == null) {
+						val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
+						wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
+							setReferenceCounted(false)
+						}
+					}
+					wakeLock?.acquire(graceTimeoutMs)
+				} else {
+					if (wakeLock?.isHeld == true) {
+						wakeLock?.release()
+						log("Transfer wake lock released")
+					}
+					if (wifiLock?.isHeld == true) {
+						wifiLock?.release()
+						log("Transfer WiFi lock released")
+					}
+				}
+			} catch (e: Exception) {
+				log("Error updating transfer locks: ${e.message}")
+			}
+		}
+	}
 
 	override fun onCreate() {
 		super.onCreate()
@@ -109,57 +194,13 @@ class GraffitiService : Service() {
 			startForeground(NOTIFICATION_ID, notification)
 		}
 
-		if (multicastLock == null) {
-			try {
-				val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-				multicastLock = wifiManager.createMulticastLock("GraffitiMulticastLock").apply {
-					setReferenceCounted(false)
-					acquire()
-				}
-				log("Multicast lock acquired")
-			} catch (e: Exception) {
-				log("Failed to acquire multicast lock: ${e.message}")
-			}
-		}
-
-		if (wifiLock == null) {
-			try {
-				val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-				val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-					WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-				} else {
-					@Suppress("DEPRECATION")
-					WifiManager.WIFI_MODE_FULL_HIGH_PERF
-				}
-				wifiLock = wifiManager.createWifiLock(lockMode, "GraffitiWifiLock").apply {
-					setReferenceCounted(false)
-					acquire()
-				}
-				log("WiFi lock acquired")
-			} catch (e: Exception) {
-				log("Failed to acquire WiFi lock: ${e.message}")
-			}
-		}
-
-		if (wakeLock == null) {
-			try {
-				val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
-				wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
-					setReferenceCounted(false)
-					acquire()
-				}
-				log("Wake lock acquired")
-			} catch (e: Exception) {
-				log("Failed to acquire wake lock: ${e.message}")
-			}
-		}
-
 		if (networkCallback == null) {
 			try {
 				val connectivityManager = applicationContext.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 				val callback = object : ConnectivityManager.NetworkCallback() {
 					override fun onAvailable(network: Network) {
 						log("Network link available - retrying pending connections")
+						updateTransferLocks(graceTimeoutMs = 10_000L)
 						p2p?.retryPendingConnectionsImmediately()
 					}
 
@@ -205,6 +246,15 @@ class GraffitiService : Service() {
 				}
 			}
 			this.p2p = p2p
+			p2p.addOnMulticastStateChangedListener { needed ->
+				updateMulticastLock(needed)
+			}
+			p2p.addOnTransferStateChangedListener { _ ->
+				updateTransferLocks()
+			}
+			p2p.addOnNodeConnectedListener { _, _ ->
+				updateTransferLocks(graceTimeoutMs = 10_000L)
+			}
 			val server = WebServer(
 				"localhost",
 				0,
@@ -220,6 +270,7 @@ class GraffitiService : Service() {
 				val api = GraffitiAPI(
 					p2p,
 					{ json ->
+						updateTransferLocks()
 						sendToAllWebSockets(json.toString())
 					}
 				).apply {
@@ -312,6 +363,7 @@ class GraffitiService : Service() {
 						}
 					}
 				}
+				this@GraffitiService.api = api
 				handlers.add(HandlerFactory.createLogRouter(errorsOnly = true))
 				handlers.add(api)
 				handlers.add(AssetRouter(this@GraffitiService))
@@ -386,6 +438,7 @@ class GraffitiService : Service() {
 			log("Error stopping P2P: ${e.message}")
 		}
 		webserver = null
+		api = null
 		p2p = null
 		authHandler = null
 		startupKey = null

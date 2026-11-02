@@ -200,12 +200,18 @@ class WebViewActivity : ComponentActivity() {
 
 	override fun onResume() {
 		super.onResume()
+		webView?.onResume()
 		if (GraffitiService.port == 0 && loadingLayout.visibility != View.VISIBLE) {
 			entryLayout.visibility = View.VISIBLE
 			webView?.visibility = View.GONE
 		} else {
 			webView?.evaluateJavascript("if (typeof updateBatterySettingsUi === 'function') updateBatterySettingsUi();", null)
 		}
+	}
+
+	override fun onPause() {
+		super.onPause()
+		webView?.onPause()
 	}
 
 	override fun onNewIntent(intent: Intent) {
