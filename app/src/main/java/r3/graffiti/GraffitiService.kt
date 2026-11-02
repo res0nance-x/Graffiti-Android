@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.RingtoneManager
 import android.net.ConnectivityManager
@@ -14,6 +16,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
@@ -89,6 +92,35 @@ class GraffitiService : Service() {
 	private var wifiLock: WifiManager.WifiLock? = null
 	private var wakeLock: PowerManager.WakeLock? = null
 	private var networkCallback: ConnectivityManager.NetworkCallback? = null
+	private var powerStateReceiver: BroadcastReceiver? = null
+
+	private fun isDevicePluggedIn(): Boolean {
+		return try {
+			val batteryIntent = applicationContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+			val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+			plugged != 0
+		} catch (_: Exception) {
+			false
+		}
+	}
+
+	private fun updateBackgroundMode() {
+		val p2pInstance = p2p ?: return
+		try {
+			val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
+			val isInteractive = powerManager.isInteractive
+			val isPluggedIn = isDevicePluggedIn()
+			val isServerOrRelay = (p2pInstance.serverPort != null) || p2pInstance.isRelayEnabled()
+			val useBackgroundMode = !isInteractive && !isPluggedIn && !isServerOrRelay
+			val wasBackground = p2pInstance.isBackgroundMode()
+			p2pInstance.setBackgroundMode(useBackgroundMode)
+			if (wasBackground && !useBackgroundMode) {
+				updateTransferLocks(graceTimeoutMs = 10_000L)
+			}
+		} catch (e: Exception) {
+			log("Error updating background mode: ${e.message}")
+		}
+	}
 
 	private fun updateMulticastLock(needed: Boolean) {
 		synchronized(lockMutex) {
@@ -217,8 +249,30 @@ class GraffitiService : Service() {
 			}
 		}
 
+		if (powerStateReceiver == null) {
+			try {
+				val receiver = object : BroadcastReceiver() {
+					override fun onReceive(context: Context?, intent: Intent?) {
+						updateBackgroundMode()
+					}
+				}
+				val filter = IntentFilter().apply {
+					addAction(Intent.ACTION_SCREEN_ON)
+					addAction(Intent.ACTION_SCREEN_OFF)
+					addAction(Intent.ACTION_POWER_CONNECTED)
+					addAction(Intent.ACTION_POWER_DISCONNECTED)
+				}
+				registerReceiver(receiver, filter)
+				powerStateReceiver = receiver
+			} catch (e: Exception) {
+				log("Failed to register power state receiver: ${e.message}")
+			}
+		}
+
 		if (!startServer()) {
 			stopSelf()
+		} else {
+			updateBackgroundMode()
 		}
 		return START_STICKY
 	}
@@ -270,6 +324,7 @@ class GraffitiService : Service() {
 				val api = GraffitiAPI(
 					p2p,
 					{ json ->
+						updateBackgroundMode()
 						updateTransferLocks()
 						sendToAllWebSockets(json.toString())
 					}
@@ -419,6 +474,14 @@ class GraffitiService : Service() {
 			log("Error releasing wake lock: ${e.message}")
 		}
 		try {
+			powerStateReceiver?.let {
+				unregisterReceiver(it)
+			}
+			powerStateReceiver = null
+		} catch (e: Exception) {
+			log("Error unregistering power state receiver: ${e.message}")
+		}
+		try {
 			networkCallback?.let {
 				val connectivityManager = applicationContext.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 				connectivityManager.unregisterNetworkCallback(it)
@@ -433,7 +496,7 @@ class GraffitiService : Service() {
 			log("Error stopping WebServer: ${e.message}")
 		}
 		try {
-			p2p?.stopTCPServer()
+			p2p?.shutdown()
 		} catch (e: Exception) {
 			log("Error stopping P2P: ${e.message}")
 		}
