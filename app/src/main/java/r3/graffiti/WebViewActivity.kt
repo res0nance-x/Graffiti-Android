@@ -14,7 +14,14 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.*
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -42,7 +49,6 @@ import java.net.URLDecoder
 import kotlin.time.Duration.Companion.milliseconds
 
 class WebViewActivity : ComponentActivity() {
-
 	private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
 	inner class AndroidBridge {
@@ -124,7 +130,8 @@ class WebViewActivity : ComponentActivity() {
 						}
 						startActivity(intent)
 						return@runOnUiThread
-					} catch (_: Exception) {}
+					} catch (_: Exception) {
+					}
 				}
 
 				try {
@@ -137,7 +144,11 @@ class WebViewActivity : ComponentActivity() {
 						}
 						startActivity(intent)
 					} catch (e: Exception) {
-						Toast.makeText(this@WebViewActivity, "Unable to open battery settings: ${e.message}", Toast.LENGTH_SHORT).show()
+						Toast.makeText(
+							this@WebViewActivity,
+							"Unable to open battery settings: ${e.message}",
+							Toast.LENGTH_SHORT
+						).show()
 					}
 				}
 			}
@@ -152,22 +163,20 @@ class WebViewActivity : ComponentActivity() {
 		}
 		filePathCallback = null
 	}
-
-	private val multipleFilePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-		if (!uris.isNullOrEmpty()) {
-			filePathCallback?.onReceiveValue(uris.toTypedArray())
-		} else {
-			filePathCallback?.onReceiveValue(null)
+	private val multipleFilePickerLauncher =
+		registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+			if (!uris.isNullOrEmpty()) {
+				filePathCallback?.onReceiveValue(uris.toTypedArray())
+			} else {
+				filePathCallback?.onReceiveValue(null)
+			}
+			filePathCallback = null
 		}
-		filePathCallback = null
-	}
-
 	private val permissionLauncher = registerForActivityResult(
 		ActivityResultContracts.RequestMultiplePermissions()
 	) { _ ->
 		// Permissions handled by system, service re-checks
 	}
-
 	private var pendingDownloadUrl: String? = null
 	private val fileSaverLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
 		val sourceUrl = pendingDownloadUrl
@@ -176,14 +185,12 @@ class WebViewActivity : ComponentActivity() {
 		}
 		pendingDownloadUrl = null
 	}
-
 	private var customView: View? = null
 	private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 	private var webView: WebView? = null
 	private lateinit var rootLayout: FrameLayout
 	private lateinit var loadingLayout: LinearLayout
 	private lateinit var entryLayout: LinearLayout
-
 	override fun onCreate(savedInstanceState: Bundle?) {
 		enableEdgeToEdge()
 		super.onCreate(savedInstanceState)
@@ -205,7 +212,10 @@ class WebViewActivity : ComponentActivity() {
 			entryLayout.visibility = View.VISIBLE
 			webView?.visibility = View.GONE
 		} else {
-			webView?.evaluateJavascript("if (typeof updateBatterySettingsUi === 'function') updateBatterySettingsUi();", null)
+			webView?.evaluateJavascript(
+				"if (typeof updateBatterySettingsUi === 'function') updateBatterySettingsUi();",
+				null
+			)
 		}
 	}
 
@@ -246,7 +256,6 @@ class WebViewActivity : ComponentActivity() {
 				FrameLayout.LayoutParams.MATCH_PARENT,
 				FrameLayout.LayoutParams.MATCH_PARENT
 			)
-
 			val spinner = ProgressBar(this@WebViewActivity).apply {
 				isIndeterminate = true
 			}
@@ -271,7 +280,6 @@ class WebViewActivity : ComponentActivity() {
 			)
 			visibility = View.GONE
 			setPadding(64, 64, 64, 64)
-
 			val titleView = TextView(this@WebViewActivity).apply {
 				text = "Graffiti"
 				setTextColor(Color.WHITE)
@@ -279,7 +287,6 @@ class WebViewActivity : ComponentActivity() {
 				gravity = Gravity.CENTER
 				typeface = android.graphics.Typeface.DEFAULT_BOLD
 			}
-
 			val statusView = TextView(this@WebViewActivity).apply {
 				text = "Graffiti Service is stopped"
 				setTextColor(Color.LTGRAY)
@@ -287,7 +294,6 @@ class WebViewActivity : ComponentActivity() {
 				gravity = Gravity.CENTER
 				setPadding(0, 16, 0, 36)
 			}
-
 			val startButton = Button(this@WebViewActivity).apply {
 				text = "Start Graffiti Service"
 				setBackgroundColor(Color.parseColor("#2196F3"))
@@ -303,7 +309,6 @@ class WebViewActivity : ComponentActivity() {
 			addView(startButton)
 		}
 		rootLayout.addView(entryLayout)
-
 		val wv = WebView(this).apply {
 			layoutParams = FrameLayout.LayoutParams(
 				FrameLayout.LayoutParams.MATCH_PARENT,
@@ -346,7 +351,6 @@ class WebViewActivity : ComponentActivity() {
 					}
 					customView = view
 					customViewCallback = callback
-
 					val decorView = window.decorView as FrameLayout
 					decorView.addView(
 						view,
@@ -366,7 +370,6 @@ class WebViewActivity : ComponentActivity() {
 
 				override fun onHideCustomView() {
 					if (customView == null) return
-
 					val decorView = window.decorView as FrameLayout
 					decorView.removeView(customView)
 					customView = null
@@ -464,7 +467,6 @@ class WebViewActivity : ComponentActivity() {
 		if (Build.VERSION.SDK_INT >= 37) { // Android 17
 			permissions.add("android.permission.ACCESS_LOCAL_NETWORK")
 		}
-
 		val toRequest = permissions.filter {
 			ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
 		}
@@ -487,14 +489,16 @@ class WebViewActivity : ComponentActivity() {
 					connection.setRequestProperty("X-Auth-Token", token)
 				}
 			}
-		} catch (_: Exception) {}
+		} catch (_: Exception) {
+		}
 
 		try {
 			val cookies = CookieManager.getInstance().getCookie(url)
 			if (!cookies.isNullOrEmpty()) {
 				connection.setRequestProperty("Cookie", cookies)
 			}
-		} catch (_: Exception) {}
+		} catch (_: Exception) {
+		}
 	}
 
 	private fun triggerSaveAs(url: String, suggestedFileName: String? = null) {
@@ -516,7 +520,6 @@ class WebViewActivity : ComponentActivity() {
 				connection.connect()
 				val contentType = connection.contentType ?: "*/*"
 				val contentDisposition = connection.getHeaderField("Content-Disposition")
-
 				var fileName = extractFilename(contentDisposition)
 				if (fileName == null) {
 					fileName = URLUtil.guessFileName(url, contentDisposition, contentType)

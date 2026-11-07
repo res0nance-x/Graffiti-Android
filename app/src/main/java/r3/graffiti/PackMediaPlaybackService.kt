@@ -20,8 +20,10 @@ import java.io.File
 object PackHolder {
 	var currentPack: Pack? = null
 	var currentPackName: String = "Pack Viewer"
+
 	@Volatile
 	var listeningPort: Int = 0
+
 	@Volatile
 	var onServiceStopped: (() -> Unit)? = null
 }
@@ -80,7 +82,7 @@ class PackMediaPlaybackService : Service() {
 		val ws = WebServer("localhost", 0, tmpDir)
 		ws.handlers.add(HandlerFactory.createLogRouter(errorsOnly = true))
 		ws.handlers.add(HandlerFactory.createWelcomeHandler())
-		ws.handlers.add(HandlerFactory.createPackHandler(pack))
+		ws.handlers.add(HandlerFactory.createPackHandler(pack, loose = true))
 		ws.handlers.add(ContentHandler { header, _ ->
 			val path = header.optString("path", "/")
 			if (path == "/" || path == "/index.html") {
@@ -146,7 +148,8 @@ class PackMediaPlaybackService : Service() {
 		if (pack is AutoCloseable) {
 			try {
 				pack.close()
-			} catch (_: Exception) {}
+			} catch (_: Exception) {
+			}
 		}
 		PackHolder.currentPack = null
 		PackHolder.listeningPort = 0

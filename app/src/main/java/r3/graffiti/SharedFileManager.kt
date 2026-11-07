@@ -30,10 +30,8 @@ object SharedFileManager {
 	fun handleIntent(context: Context, intent: Intent?): Boolean {
 		if (intent == null) return false
 		val action = intent.action ?: return false
-
 		// Ignore standard MAIN launcher intents
 		if (Intent.ACTION_MAIN == action) return false
-
 		val type = intent.type ?: "*/*"
 		val newItems = mutableListOf<SharedItem>()
 
@@ -76,7 +74,6 @@ object SharedFileManager {
 		if (!extraText.isNullOrBlank()) {
 			return extraText
 		}
-
 		// 2. Check ClipData items (text or web URIs)
 		val clip = intent.clipData
 		if (clip != null && clip.itemCount > 0) {
@@ -88,7 +85,11 @@ object SharedFileManager {
 					clipTexts.add(t)
 				} else {
 					val u = item.uri
-					if (u != null && (u.scheme.equals("http", ignoreCase = true) || u.scheme.equals("https", ignoreCase = true))) {
+					if (u != null && (u.scheme.equals("http", ignoreCase = true) || u.scheme.equals(
+							"https",
+							ignoreCase = true
+						))
+					) {
 						clipTexts.add(u.toString())
 					}
 				}
@@ -97,10 +98,13 @@ object SharedFileManager {
 				return clipTexts.joinToString("\n")
 			}
 		}
-
 		// 3. Check Intent data (web URL)
 		val dataUri = intent.data
-		if (dataUri != null && (dataUri.scheme.equals("http", ignoreCase = true) || dataUri.scheme.equals("https", ignoreCase = true))) {
+		if (dataUri != null && (dataUri.scheme.equals("http", ignoreCase = true) || dataUri.scheme.equals(
+				"https",
+				ignoreCase = true
+			))
+		) {
 			return dataUri.toString().trim()
 		}
 
@@ -109,13 +113,11 @@ object SharedFileManager {
 
 	private fun extractFileUris(intent: Intent): List<Uri> {
 		val uris = mutableListOf<Uri>()
-
 		fun isFileUri(uri: Uri?): Boolean {
 			if (uri == null) return false
 			val scheme = uri.scheme?.lowercase() ?: return false
 			return scheme != "http" && scheme != "https"
 		}
-
 		// 1. Single EXTRA_STREAM
 		val singleUri = try {
 			intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
@@ -125,7 +127,6 @@ object SharedFileManager {
 		if (isFileUri(singleUri)) {
 			uris.add(singleUri!!)
 		}
-
 		// 2. Multiple EXTRA_STREAM
 		val arrayUris = try {
 			intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
@@ -139,7 +140,6 @@ object SharedFileManager {
 				}
 			}
 		}
-
 		// 3. ClipData URIs (if no EXTRA_STREAM found)
 		if (uris.isEmpty()) {
 			val clip = intent.clipData
@@ -195,7 +195,6 @@ object SharedFileManager {
 			list
 		}
 		if (items.isEmpty()) return
-
 		val appContext = context.applicationContext
 		CoroutineScope(Dispatchers.IO).launch {
 			var port = GraffitiService.port
@@ -214,7 +213,6 @@ object SharedFileManager {
 				}
 				return@launch
 			}
-
 			val fileItems = items.filter { it.uri != null }
 			val textItems = items.filter { !it.text.isNullOrBlank() }
 
@@ -223,7 +221,8 @@ object SharedFileManager {
 					sendSharedFileApi(appContext, port, token, fileItems[0])
 				} catch (e: Exception) {
 					withContext(Dispatchers.Main) {
-						Toast.makeText(appContext, "Failed to send ${fileItems[0].name}: ${e.message}", Toast.LENGTH_LONG).show()
+						Toast.makeText(appContext, "Failed to send ${fileItems[0].name}: ${e.message}", Toast.LENGTH_LONG)
+							.show()
 					}
 				}
 			} else if (fileItems.size > 1) {
@@ -252,7 +251,6 @@ object SharedFileManager {
 		val firstBase = items.first().name.substringBeforeLast('.').ifBlank { "shared" }
 		val packName = "${firstBase}_pack.pack"
 		val encodedPackName = URLEncoder.encode(packName, "UTF-8")
-
 		// 1. Begin pack staging session
 		val beginUrl = URL("http://localhost:$port/api/pack/create/begin?name=$encodedPackName")
 		val beginConn = beginUrl.openConnection() as HttpURLConnection
@@ -289,7 +287,6 @@ object SharedFileManager {
 					counter++
 				}
 				usedNames.add(uniqueName)
-
 				val encodedPath = URLEncoder.encode(uniqueName, "UTF-8")
 				val fileUrl = URL("http://localhost:$port/api/pack/create/file?sessionId=$sessionId&filePath=$encodedPath")
 				val fileConn = fileUrl.openConnection() as HttpURLConnection
@@ -308,7 +305,6 @@ object SharedFileManager {
 						input.copyTo(output, r3.io.DEFAULT_COPY_BUFFER_SIZE)
 					}
 				} ?: throw Exception("Cannot open stream for ${item.name}")
-
 				val fileCode = fileConn.responseCode
 				val fileText = if (fileCode in 200..299) {
 					fileConn.inputStream.bufferedReader().readText()
@@ -324,7 +320,6 @@ object SharedFileManager {
 					throw Exception(err)
 				}
 			}
-
 			// 3. Finish pack creation and send message
 			val finishUrl = URL("http://localhost:$port/api/pack/create/finish?sessionId=$sessionId")
 			val finishConn = finishUrl.openConnection() as HttpURLConnection
@@ -382,7 +377,6 @@ object SharedFileManager {
 				input.copyTo(output, r3.io.DEFAULT_COPY_BUFFER_SIZE)
 			}
 		} ?: throw Exception("Cannot open file stream")
-
 		val responseCode = conn.responseCode
 		val responseText = if (responseCode in 200..299) {
 			conn.inputStream.bufferedReader().readText()
@@ -392,7 +386,6 @@ object SharedFileManager {
 		if (responseCode !in 200..299) {
 			throw Exception("HTTP $responseCode: $responseText")
 		}
-
 		val json = JSONObject(responseText)
 		if (json.optBoolean("ok", false)) {
 			withContext(Dispatchers.Main) {
@@ -414,13 +407,11 @@ object SharedFileManager {
 		conn.setRequestProperty("X-Auth-Token", token)
 		conn.doOutput = true
 		conn.setRequestProperty("Content-Type", "text/plain; charset=UTF-8")
-
 		val bytes = text.toByteArray(Charsets.UTF_8)
 		conn.setRequestProperty("Content-Length", bytes.size.toString())
 		conn.setFixedLengthStreamingMode(bytes.size.toLong())
 
 		conn.outputStream.use { it.write(bytes) }
-
 		val responseCode = conn.responseCode
 		val responseText = if (responseCode in 200..299) {
 			conn.inputStream.bufferedReader().readText()
@@ -430,7 +421,6 @@ object SharedFileManager {
 		if (responseCode !in 200..299) {
 			throw Exception("HTTP $responseCode: $responseText")
 		}
-
 		val json = JSONObject(responseText)
 		if (json.optBoolean("ok", false)) {
 			withContext(Dispatchers.Main) {

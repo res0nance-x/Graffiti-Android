@@ -6,7 +6,6 @@ import android.util.Log
 class GraffitiApp : Application() {
 	companion object {
 		const val TAG = "Graffiti"
-
 		fun initLogging() {
 			r3.io.log = { msg -> Log.i(TAG, msg) }
 			r3.io.debug = { msg -> Log.d(TAG, msg) }

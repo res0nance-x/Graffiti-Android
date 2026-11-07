@@ -15,7 +15,12 @@ import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.*
+import android.widget.Button
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -27,10 +32,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.time.Duration.Companion.milliseconds
 import r3.encryption.EncryptedSource
 import r3.hash.hash256
 import r3.math.EncryptedSequence
+import r3.org.json.JSONObject
 import r3.pack.BinaryPack
 import r3.pack.MhtmlPack
 import r3.pack.Pack
@@ -39,22 +44,20 @@ import r3.pke.Password256
 import r3.source.FileSource
 import r3.source.Source
 import java.io.File
+import kotlin.time.Duration.Companion.milliseconds
 
 class PackViewActivity : ComponentActivity() {
-
 	private var intentUri: Uri? = null
 	private var intentFilePath: String? = null
-
 	private lateinit var rootLayout: FrameLayout
 	private lateinit var loadingLayout: LinearLayout
 	private lateinit var errorLayout: LinearLayout
 	private lateinit var errorTextView: TextView
 	private lateinit var webView: WebView
-
 	private var customView: View? = null
 	private var customViewCallback: WebChromeClient.CustomViewCallback? = null
 	private var customViewContainer: FrameLayout? = null
-
+	private val isDarkMode = isGraffitiDarkTheme()
 	override fun onCreate(savedInstanceState: Bundle?) {
 		enableEdgeToEdge()
 		super.onCreate(savedInstanceState)
@@ -135,7 +138,6 @@ class PackViewActivity : ComponentActivity() {
 				FrameLayout.LayoutParams.MATCH_PARENT,
 				FrameLayout.LayoutParams.MATCH_PARENT
 			)
-
 			val spinner = ProgressBar(this@PackViewActivity).apply {
 				isIndeterminate = true
 			}
@@ -191,19 +193,36 @@ class PackViewActivity : ComponentActivity() {
 				allowFileAccess = true
 				domStorageEnabled = true
 				mediaPlaybackRequiresUserGesture = false
+				// Zooming support
+				setSupportZoom(true)
+				builtInZoomControls = true
+				displayZoomControls = false
+				// Desktop view & overview mode
+				useWideViewPort = true
+				loadWithOverviewMode = true
+				// Dark mode
+				isAlgorithmicDarkeningAllowed = isDarkMode
 			}
 
-			webViewClient = WebViewClient()
+			webViewClient = object : WebViewClient() {
+				override fun onPageFinished(view: WebView?, url: String?) {
+					super.onPageFinished(view, url)
+					applyPageEnhancements()
+				}
+			}
+
 			webChromeClient = object : WebChromeClient() {
 				override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
 					customView = view
 					customViewCallback = callback
 					customViewContainer = FrameLayout(this@PackViewActivity).apply {
 						setBackgroundColor(Color.BLACK)
-						addView(view, FrameLayout.LayoutParams(
-							FrameLayout.LayoutParams.MATCH_PARENT,
-							FrameLayout.LayoutParams.MATCH_PARENT
-						))
+						addView(
+							view, FrameLayout.LayoutParams(
+								FrameLayout.LayoutParams.MATCH_PARENT,
+								FrameLayout.LayoutParams.MATCH_PARENT
+							)
+						)
 					}
 					rootLayout.addView(customViewContainer)
 					webView.visibility = View.GONE
@@ -255,6 +274,7 @@ class PackViewActivity : ComponentActivity() {
 						}
 					}
 				}
+
 				WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
 					if (extra != null) {
 						menu.setHeaderTitle(extra.substringAfterLast('/'))
@@ -312,7 +332,6 @@ class PackViewActivity : ComponentActivity() {
 			hint = "Password"
 			setPadding(48, 24, 48, 24)
 		}
-
 		val container = LinearLayout(this).apply {
 			orientation = LinearLayout.VERTICAL
 			setPadding(32, 16, 32, 0)
@@ -479,5 +498,125 @@ class PackViewActivity : ComponentActivity() {
 			removeAllViews()
 			destroy()
 		}
+	}
+
+	private fun applyPageEnhancements() {
+		val safeLayoutJs = """
+			(function() {
+				if (!document.querySelector('meta[name="viewport"]')) {
+					const meta = document.createElement('meta');
+					meta.name = 'viewport';
+					meta.content = 'width=device-width, initial-scale=1.0, minimum-scale=0.5, maximum-scale=5.0, user-scalable=yes';
+					document.head.appendChild(meta);
+				}
+				if (!document.getElementById('graffiti-safe-layout')) {
+					const style = document.createElement('style');
+					style.id = 'graffiti-safe-layout';
+					style.textContent = `
+						img, video, canvas, iframe {
+							max-width: 100% !important;
+							height: auto !important;
+						}
+						table {
+							display: block;
+							overflow-x: auto;
+							max-width: 100%;
+						}
+					`;
+					document.head.appendChild(style);
+				}
+			})();
+		""".trimIndent()
+		webView.evaluateJavascript(safeLayoutJs, null)
+		applyFitModeCss()
+		applyDarkModeCss()
+	}
+
+	private fun applyFitModeCss() {
+		val js = """
+			(function() {
+				let el = document.getElementById('graffiti-reflow-style');
+				if (!el) {
+					el = document.createElement('style');
+					el.id = 'graffiti-reflow-style';
+					el.textContent = `
+						html, body {
+							max-width: 100vw !important;
+							overflow-x: hidden !important;
+							box-sizing: border-box !important;
+						}
+						* {
+							max-width: 100vw !important;
+							box-sizing: border-box !important;
+						}
+						table, tr, td, th {
+							max-width: 100% !important;
+							word-break: break-word !important;
+						}
+						pre, code {
+							white-space: pre-wrap !important;
+							word-break: break-word !important;
+						}
+					`;
+					document.head.appendChild(el);
+				}
+			})();
+			""".trimIndent()
+		webView.evaluateJavascript(js, null)
+	}
+
+	private fun applyDarkModeCss() {
+		if (isDarkMode) {
+			val js = """
+			(function() {
+				let el = document.getElementById('graffiti-dark-style');
+				if (!el) {
+					el = document.createElement('style');
+					el.id = 'graffiti-dark-style';
+					el.textContent = `
+						@media (prefers-color-scheme: light), (prefers-color-scheme: no-preference) {
+							html, body {
+								background-color: #121212 !important;
+								color: #e0e0e0 !important;
+							}
+							div, p, span, h1, h2, h3, h4, h5, h6, li, td, th {
+								color: inherit;
+							}
+							a {
+								color: #8ab4f8 !important;
+							}
+						}
+					`;
+					document.head.appendChild(el);
+				}
+			})();
+			""".trimIndent()
+			webView.evaluateJavascript(js, null)
+		}
+	}
+
+	private fun loadGraffitiThemeSetting(): String {
+		try {
+			val graffitiDir = File(filesDir, "graffiti")
+			val settingsFile = File(graffitiDir, "settings.json")
+			if (settingsFile.exists()) {
+				val json = JSONObject(settingsFile.readText())
+				val theme = json.optString("graffiti:theme", "")
+				if (theme.isNotEmpty()) return theme
+			}
+		} catch (_: Exception) {
+		}
+		return "dark-sage"
+	}
+
+	private fun isGraffitiDarkTheme(): Boolean {
+		val theme = loadGraffitiThemeSetting().lowercase()
+		if (theme.startsWith("light")) {
+			return false
+		}
+		if (theme.startsWith("dark")) {
+			return true
+		}
+		return false
 	}
 }

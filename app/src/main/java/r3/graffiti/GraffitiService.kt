@@ -18,7 +18,6 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
-import android.os.Environment
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -93,7 +92,6 @@ class GraffitiService : Service() {
 	private var wakeLock: PowerManager.WakeLock? = null
 	private var networkCallback: ConnectivityManager.NetworkCallback? = null
 	private var powerStateReceiver: BroadcastReceiver? = null
-
 	private fun isDevicePluggedIn(): Boolean {
 		return try {
 			val batteryIntent = applicationContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -155,9 +153,10 @@ class GraffitiService : Service() {
 				if (active) {
 					if (wakeLock == null) {
 						val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
-						wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
-							setReferenceCounted(false)
-						}
+						wakeLock =
+							powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
+								setReferenceCounted(false)
+							}
 					}
 					val wasHeld = wakeLock?.isHeld == true
 					wakeLock?.acquire(15 * 60 * 1000L)
@@ -184,9 +183,10 @@ class GraffitiService : Service() {
 				} else if (graceTimeoutMs > 0L) {
 					if (wakeLock == null) {
 						val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
-						wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
-							setReferenceCounted(false)
-						}
+						wakeLock =
+							powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Graffiti:TransferWakeLock").apply {
+								setReferenceCounted(false)
+							}
 					}
 					wakeLock?.acquire(graceTimeoutMs)
 				} else {
@@ -339,7 +339,11 @@ class GraffitiService : Service() {
 							val sequence = r3.math.EncryptedSequence.createSequence(pass)
 							val encryptedSrc = r3.encryption.EncryptedSource(sequence, source)
 							r3.pack.BinaryPack(encryptedSrc)
-						} else if (fileName.endsWith(".mhtml", ignoreCase = true) || fileName.endsWith(".mht", ignoreCase = true)) {
+						} else if (fileName.endsWith(".mhtml", ignoreCase = true) || fileName.endsWith(
+								".mht",
+								ignoreCase = true
+							)
+						) {
 							r3.pack.MhtmlPack(source)
 						} else if (fileName.endsWith(".zip", ignoreCase = true)) {
 							r3.pack.ZipPack(source)
@@ -519,8 +523,8 @@ class GraffitiService : Service() {
 		try {
 			manager.deleteNotificationChannel("graffiti_service_channel")
 			manager.deleteNotificationChannel("graffiti_service_channel_v2")
-		} catch (_: Exception) {}
-
+		} catch (_: Exception) {
+		}
 		val serviceChannel = NotificationChannel(
 			CHANNEL_ID,
 			"Graffiti Service Channel",
