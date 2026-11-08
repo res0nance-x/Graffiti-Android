@@ -207,6 +207,7 @@ class WebViewActivity : ComponentActivity() {
 
 	override fun onResume() {
 		super.onResume()
+		GraffitiService.onScreenVisibilityChanged(true)
 		webView?.onResume()
 		if (GraffitiService.port == 0 && loadingLayout.visibility != View.VISIBLE) {
 			entryLayout.visibility = View.VISIBLE
@@ -219,8 +220,16 @@ class WebViewActivity : ComponentActivity() {
 		}
 	}
 
+	override fun onWindowFocusChanged(hasFocus: Boolean) {
+		super.onWindowFocusChanged(hasFocus)
+		if (hasFocus) {
+			GraffitiService.onScreenVisibilityChanged(true)
+		}
+	}
+
 	override fun onPause() {
 		super.onPause()
+		GraffitiService.onScreenVisibilityChanged(false)
 		webView?.onPause()
 	}
 

@@ -1,5 +1,6 @@
 package r3.graffiti
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,7 +11,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.media.RingtoneManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -31,6 +31,7 @@ import r3.http.WebServer
 import r3.io.log
 import r3.key.Key128
 import r3.org.json.JSONObject
+import r3.pke.EncryptedMetaKey
 import java.io.File
 
 class AssetRouter(private val context: Context) : ContentHandler {
@@ -61,7 +62,16 @@ class GraffitiService : Service() {
 
 		const val ACTION_STOP_SERVICE = "r3.graffiti.ACTION_STOP_SERVICE"
 		private const val NOTIFICATION_ID = 1
-		private const val CHANNEL_ID = "graffiti_service_channel_v3"
+		private const val MESSAGE_NOTIFICATION_ID = 3
+		private const val CHANNEL_ID = "graffiti_service_channel_v5"
+		private const val MESSAGE_CHANNEL_ID = "graffiti_message_channel"
+
+		@Volatile
+		private var instance: GraffitiService? = null
+
+		@Volatile
+		var isScreenVisible: Boolean = false
+			private set
 
 		@Volatile
 		var port: Int = 0
@@ -81,12 +91,25 @@ class GraffitiService : Service() {
 		fun getOrRotateStartupKey(): Key128? {
 			return authHandler?.rotateStartupKey()?.also { startupKey = it } ?: startupKey
 		}
+
+		fun onScreenVisibilityChanged(visible: Boolean) {
+			isScreenVisible = visible
+			if (visible) {
+				val svc = instance
+				if (svc != null && svc.isAppScreenVisible()) {
+					svc.clearUnreadMessages()
+				}
+			}
+		}
 	}
 
 	private var webserver: WebServer? = null
 	private var p2p: GraffitiP2P? = null
 	private var api: GraffitiAPI? = null
 	private val lockMutex = Any()
+	private val notificationLock = Any()
+	private val unreadKeys = HashSet<EncryptedMetaKey>()
+	private val soundDebouncer = SoundDebouncer()
 	private var multicastLock: WifiManager.MulticastLock? = null
 	private var wifiLock: WifiManager.WifiLock? = null
 	private var wakeLock: PowerManager.WakeLock? = null
@@ -207,6 +230,7 @@ class GraffitiService : Service() {
 
 	override fun onCreate() {
 		super.onCreate()
+		instance = this
 		createNotificationChannel()
 	}
 
@@ -218,8 +242,13 @@ class GraffitiService : Service() {
 			return START_NOT_STICKY
 		}
 
-		messageCount = 0
-		val notification = createNotification()
+		synchronized(notificationLock) {
+			unreadKeys.clear()
+			messageCount = 0
+		}
+		soundDebouncer.reset()
+		cancelMessageNotification()
+		val notification = createServiceNotification()
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
 			startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
 		} else {
@@ -254,11 +283,15 @@ class GraffitiService : Service() {
 				val receiver = object : BroadcastReceiver() {
 					override fun onReceive(context: Context?, intent: Intent?) {
 						updateBackgroundMode()
+						if (isAppScreenVisible()) {
+							clearUnreadMessages()
+						}
 					}
 				}
 				val filter = IntentFilter().apply {
 					addAction(Intent.ACTION_SCREEN_ON)
 					addAction(Intent.ACTION_SCREEN_OFF)
+					addAction(Intent.ACTION_USER_PRESENT)
 					addAction(Intent.ACTION_POWER_CONNECTED)
 					addAction(Intent.ACTION_POWER_DISCONNECTED)
 				}
@@ -287,17 +320,8 @@ class GraffitiService : Service() {
 				return false
 			}
 			val p2p = GraffitiP2P(dataDir, false)
-			val soundDebouncer = SoundDebouncer()
 			p2p.addOnMessageReceivedListener { key ->
-				soundDebouncer.tryTrigger {
-					try {
-						val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-						val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
-						ringtone.play()
-					} catch (e: Exception) {
-						e.printStackTrace()
-					}
-				}
+				onNewMessageReceived(key)
 			}
 			this.p2p = p2p
 			p2p.addOnMulticastStateChangedListener { needed ->
@@ -429,9 +453,6 @@ class GraffitiService : Service() {
 				tempFileManagerFactory = CustomTempFileManagerFactory { p2p.tmpDir }
 				start(0, true)
 			}
-			p2p.addOnMessageReceivedListener {
-				messageCount++
-			}
 			port = server.listeningPort
 			webserver = server
 			log("WebServer started on port $port")
@@ -440,6 +461,71 @@ class GraffitiService : Service() {
 			log("Failed to start server components: ${e.message}")
 			cleanup()
 			false
+		}
+	}
+
+	private fun isAppScreenVisible(): Boolean {
+		if (!isScreenVisible) return false
+		return try {
+			val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
+			val keyguardManager = applicationContext.getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+			powerManager.isInteractive && !keyguardManager.isKeyguardLocked
+		} catch (_: Exception) {
+			isScreenVisible
+		}
+	}
+
+	private fun onNewMessageReceived(key: EncryptedMetaKey) {
+		if (isAppScreenVisible()) return
+		var count = 0
+		var added = false
+		synchronized(notificationLock) {
+			if (unreadKeys.add(key)) {
+				messageCount = unreadKeys.size
+				count = messageCount
+				added = true
+			}
+		}
+		if (added) {
+			val shouldAlert = soundDebouncer.shouldTrigger()
+			updateMessageNotification(count = count, silent = !shouldAlert)
+		}
+	}
+
+	private fun clearUnreadMessages() {
+		var shouldClear = false
+		synchronized(notificationLock) {
+			if (messageCount > 0 || unreadKeys.isNotEmpty()) {
+				unreadKeys.clear()
+				messageCount = 0
+				shouldClear = true
+			}
+		}
+		if (shouldClear) {
+			soundDebouncer.reset()
+			cancelMessageNotification()
+		}
+	}
+
+	private fun updateMessageNotification(count: Int, silent: Boolean) {
+		if (count <= 0) {
+			cancelMessageNotification()
+			return
+		}
+		try {
+			val manager = getSystemService(NotificationManager::class.java)
+			manager.notify(MESSAGE_NOTIFICATION_ID, createMessageNotification(count, silent))
+		} catch (e: Exception) {
+			log("Error updating message notification: ${e.message}")
+		}
+	}
+
+	private fun cancelMessageNotification() {
+		try {
+			val manager = getSystemService(NotificationManager::class.java)
+			manager.cancel(MESSAGE_NOTIFICATION_ID)
+		} catch (e: Exception) {
+			log("Error cancelling message notification: ${e.message}")
 		}
 	}
 
@@ -504,6 +590,15 @@ class GraffitiService : Service() {
 		} catch (e: Exception) {
 			log("Error stopping P2P: ${e.message}")
 		}
+		synchronized(notificationLock) {
+			unreadKeys.clear()
+			messageCount = 0
+		}
+		soundDebouncer.reset()
+		cancelMessageNotification()
+		if (instance === this) {
+			instance = null
+		}
 		webserver = null
 		api = null
 		p2p = null
@@ -523,6 +618,8 @@ class GraffitiService : Service() {
 		try {
 			manager.deleteNotificationChannel("graffiti_service_channel")
 			manager.deleteNotificationChannel("graffiti_service_channel_v2")
+			manager.deleteNotificationChannel("graffiti_service_channel_v3")
+			manager.deleteNotificationChannel("graffiti_service_channel_v4")
 		} catch (_: Exception) {
 		}
 		val serviceChannel = NotificationChannel(
@@ -536,9 +633,19 @@ class GraffitiService : Service() {
 			enableVibration(false)
 		}
 		manager.createNotificationChannel(serviceChannel)
+
+		val messageChannel = NotificationChannel(
+			MESSAGE_CHANNEL_ID,
+			"Graffiti Messages",
+			NotificationManager.IMPORTANCE_DEFAULT
+		).apply {
+			description = "Notifications for new unread messages"
+			setShowBadge(true)
+		}
+		manager.createNotificationChannel(messageChannel)
 	}
 
-	private fun createNotification(): Notification {
+	private fun createServiceNotification(): Notification {
 		val mainActivityIntent = Intent(this, WebViewActivity::class.java)
 		val mainActivityPendingIntent = PendingIntent.getActivity(
 			this, 0, mainActivityIntent,
@@ -548,13 +655,34 @@ class GraffitiService : Service() {
 		return NotificationCompat.Builder(this, CHANNEL_ID)
 			.setContentTitle("Graffiti")
 			.setContentText("P2P Node is active")
-			.setSmallIcon(android.R.drawable.stat_notify_sync)
+			.setSmallIcon(R.mipmap.ic_launcher_foreground)
 			.setContentIntent(mainActivityPendingIntent)
 			.setOngoing(true)
 			.setSilent(true)
 			.setPriority(NotificationCompat.PRIORITY_LOW)
 			.setCategory(Notification.CATEGORY_SERVICE)
 			.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+			.build()
+	}
+
+	private fun createMessageNotification(count: Int, silent: Boolean): Notification {
+		val mainActivityIntent = Intent(this, WebViewActivity::class.java)
+		val mainActivityPendingIntent = PendingIntent.getActivity(
+			this, 0, mainActivityIntent,
+			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+		)
+		val contentText = if (count == 1) "1 new message" else "$count new messages"
+
+		return NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
+			.setContentTitle("Graffiti")
+			.setContentText(contentText)
+			.setNumber(count)
+			.setSmallIcon(R.mipmap.ic_launcher_foreground)
+			.setContentIntent(mainActivityPendingIntent)
+			.setAutoCancel(true)
+			.setSilent(silent)
+			.setPriority(NotificationCompat.PRIORITY_DEFAULT)
+			.setCategory(Notification.CATEGORY_MESSAGE)
 			.build()
 	}
 }
