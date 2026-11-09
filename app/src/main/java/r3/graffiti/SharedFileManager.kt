@@ -42,7 +42,12 @@ object SharedFileManager {
 		val type = intent.type ?: "*/*"
 		val newItems = mutableListOf<SharedItem>()
 
-		if (Intent.ACTION_SEND == action || Intent.ACTION_SEND_MULTIPLE == action) {
+		if (Intent.ACTION_VIEW == action) {
+			val uri = intent.data
+			if (uri != null) {
+				newItems.add(createSharedItemFromUri(context, uri, type))
+			}
+		} else if (Intent.ACTION_SEND == action || Intent.ACTION_SEND_MULTIPLE == action) {
 			if (type.startsWith("text/", ignoreCase = true)) {
 				// Text / Link share: extract text only, ignoring any preview thumbnail in ClipData
 				val sharedText = extractSharedText(intent)
@@ -233,18 +238,30 @@ object SharedFileManager {
 			val fileItems = items.filter { it.uri != null }
 			val textItems = items.filter { !it.text.isNullOrBlank() }
 
-			if (fileItems.size == 1) {
+			val (pmsgItems, otherFileItems) = fileItems.partition { it.name.endsWith(".pmsg", ignoreCase = true) }
+
+			for (pmsg in pmsgItems) {
 				try {
-					sendSharedFileApi(appContext, port, token, fileItems[0])
+					importSharedPmsgApi(appContext, port, token, pmsg)
 				} catch (e: Exception) {
 					withContext(Dispatchers.Main) {
-						Toast.makeText(appContext, "Failed to send ${fileItems[0].name}: ${e.message}", Toast.LENGTH_LONG)
+						Toast.makeText(appContext, "Failed to import ${pmsg.name}: ${e.message}", Toast.LENGTH_LONG).show()
+					}
+				}
+			}
+
+			if (otherFileItems.size == 1) {
+				try {
+					sendSharedFileApi(appContext, port, token, otherFileItems[0])
+				} catch (e: Exception) {
+					withContext(Dispatchers.Main) {
+						Toast.makeText(appContext, "Failed to send ${otherFileItems[0].name}: ${e.message}", Toast.LENGTH_LONG)
 							.show()
 					}
 				}
-			} else if (fileItems.size > 1) {
+			} else if (otherFileItems.size > 1) {
 				try {
-					sendSharedPackApi(appContext, port, token, fileItems)
+					sendSharedPackApi(appContext, port, token, otherFileItems)
 				} catch (e: Exception) {
 					withContext(Dispatchers.Main) {
 						Toast.makeText(appContext, "Failed to send pack: ${e.message}", Toast.LENGTH_LONG).show()
@@ -447,6 +464,55 @@ object SharedFileManager {
 			val errorMsg = json.optString("error", "Unknown error")
 			withContext(Dispatchers.Main) {
 				Toast.makeText(context, "Failed to send text: $errorMsg", Toast.LENGTH_LONG).show()
+			}
+		}
+	}
+
+	private suspend fun importSharedPmsgApi(context: Context, port: Int, token: String, item: SharedItem) {
+		val urlStr = "http://localhost:$port/api/messages/import"
+		val url = URL(urlStr)
+		val conn = url.openConnection() as HttpURLConnection
+		conn.requestMethod = "POST"
+		conn.setRequestProperty("X-Auth-Token", token)
+		conn.doOutput = true
+
+		if (item.size > 0) {
+			conn.setRequestProperty("Content-Length", item.size.toString())
+			conn.setFixedLengthStreamingMode(item.size)
+		}
+		conn.setRequestProperty("Content-Type", "application/octet-stream")
+
+		context.contentResolver.openInputStream(item.uri!!)?.use { input ->
+			conn.outputStream.use { output ->
+				input.copyTo(output, r3.io.DEFAULT_COPY_BUFFER_SIZE)
+			}
+		} ?: throw Exception("Cannot open file stream")
+
+		val responseCode = conn.responseCode
+		val responseText = if (responseCode in 200..299) {
+			conn.inputStream.bufferedReader().readText()
+		} else {
+			conn.errorStream?.bufferedReader()?.readText() ?: ""
+		}
+		if (responseCode !in 200..299) {
+			throw Exception("HTTP $responseCode: $responseText")
+		}
+		val json = JSONObject(responseText)
+		if (json.optBoolean("ok", false)) {
+			val imported = json.optInt("imported", 0)
+			val skipped = json.optInt("skipped", 0)
+			val peers = json.optInt("peers", 0)
+			withContext(Dispatchers.Main) {
+				Toast.makeText(
+					context,
+					"Imported $imported message(s)" + if (skipped > 0) " ($skipped already existed)" else "",
+					Toast.LENGTH_SHORT
+				).show()
+			}
+		} else {
+			val errorMsg = json.optString("error", "Unknown error")
+			withContext(Dispatchers.Main) {
+				Toast.makeText(context, "Failed to import ${item.name}: $errorMsg", Toast.LENGTH_LONG).show()
 			}
 		}
 	}
