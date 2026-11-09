@@ -16,6 +16,7 @@ import r3.http.HandlerFactory
 import r3.http.WebServer
 import r3.pack.Pack
 import java.io.File
+import kotlin.concurrent.thread
 
 object PackHolder {
 	var currentPack: Pack? = null
@@ -57,7 +58,12 @@ class PackMediaPlaybackService : Service() {
 			} else {
 				startForeground(NOTIFICATION_ID, notification)
 			}
-			startWebServer(pack)
+			thread(name = "PackWebServerStart", isDaemon = true) {
+				try {
+					startWebServer(pack)
+				} catch (_: Exception) {
+				}
+			}
 		} else {
 			stopSelf()
 		}

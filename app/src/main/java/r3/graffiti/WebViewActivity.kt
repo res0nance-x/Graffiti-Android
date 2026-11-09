@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -195,7 +196,12 @@ class WebViewActivity : ComponentActivity() {
 		enableEdgeToEdge()
 		super.onCreate(savedInstanceState)
 
-		SharedFileManager.handleIntent(this, intent)
+		if (savedInstanceState == null) {
+			SharedFileManager.handleIntent(this, intent)
+		} else {
+			Log.d("WebViewActivity", "onCreate with savedInstanceState != null; skipping share intent to prevent duplicate processing")
+		}
+		consumeActivityIntent()
 
 		requestPermissions()
 		startGraffitiService()
@@ -237,8 +243,27 @@ class WebViewActivity : ComponentActivity() {
 		super.onNewIntent(intent)
 		setIntent(intent)
 		val handled = SharedFileManager.handleIntent(this, intent)
+		consumeActivityIntent()
 		if (handled && GraffitiService.port == 0) {
 			promptStartServiceForShare()
+		}
+	}
+
+	private fun consumeActivityIntent() {
+		try {
+			intent?.let {
+				it.action = null
+				it.data = null
+				it.clipData = null
+				it.removeExtra(Intent.EXTRA_TEXT)
+				it.removeExtra(Intent.EXTRA_STREAM)
+			}
+			setIntent(Intent(this, WebViewActivity::class.java).apply {
+				action = Intent.ACTION_MAIN
+				addCategory(Intent.CATEGORY_LAUNCHER)
+			})
+		} catch (e: Exception) {
+			Log.w("WebViewActivity", "Failed to reset activity intent: ${e.message}")
 		}
 	}
 

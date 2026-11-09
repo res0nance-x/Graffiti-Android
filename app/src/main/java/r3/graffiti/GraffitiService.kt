@@ -320,6 +320,8 @@ class GraffitiService : Service() {
 				return false
 			}
 			val p2p = GraffitiP2P(dataDir, false)
+			val extMediaDir = externalMediaDirs.firstOrNull { it != null } ?: filesDir
+			p2p.portalDir = File(extMediaDir, "portal").also { it.mkdirs() }
 			p2p.addOnMessageReceivedListener { key ->
 				onNewMessageReceived(key)
 			}
@@ -385,6 +387,26 @@ class GraffitiService : Service() {
 
 						PackHolder.currentPack = pack
 						PackHolder.currentPackName = fileName
+						PackHolder.listeningPort = 0
+						val serviceIntent = Intent(this@GraffitiService, PackMediaPlaybackService::class.java)
+						androidx.core.content.ContextCompat.startForegroundService(this@GraffitiService, serviceIntent)
+						val intent = Intent(this@GraffitiService, PackViewActivity::class.java).apply {
+							addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+						}
+						startActivity(intent)
+						var port = PackHolder.listeningPort
+						var waitCount = 0
+						while (port == 0 && waitCount < 30) {
+							Thread.sleep(100)
+							port = PackHolder.listeningPort
+							waitCount++
+						}
+						Pair(java.util.UUID.randomUUID().toString(), port)
+					}
+					addOnOpenPackInstanceListener { pack, title ->
+						PackHolder.currentPack = pack
+						PackHolder.currentPackName = title
+						PackHolder.listeningPort = 0
 						val serviceIntent = Intent(this@GraffitiService, PackMediaPlaybackService::class.java)
 						androidx.core.content.ContextCompat.startForegroundService(this@GraffitiService, serviceIntent)
 						val intent = Intent(this@GraffitiService, PackViewActivity::class.java).apply {

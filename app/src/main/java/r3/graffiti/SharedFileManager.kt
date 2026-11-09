@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,11 +25,17 @@ data class SharedItem(
 )
 
 object SharedFileManager {
+	private const val TAG = "SharedFileManager"
+	private const val EXTRA_INTENT_PROCESSED = "r3.graffiti.INTENT_PROCESSED"
 	private val pendingItems = mutableListOf<SharedItem>()
 
 	@Synchronized
 	fun handleIntent(context: Context, intent: Intent?): Boolean {
 		if (intent == null) return false
+		if (intent.getBooleanExtra(EXTRA_INTENT_PROCESSED, false)) {
+			Log.d(TAG, "Ignoring intent that was already processed: action=${intent.action}")
+			return false
+		}
 		val action = intent.action ?: return false
 		// Ignore standard MAIN launcher intents
 		if (Intent.ACTION_MAIN == action) return false
@@ -61,6 +68,16 @@ object SharedFileManager {
 		}
 
 		if (newItems.isNotEmpty()) {
+			Log.d(TAG, "Processing and consuming share intent: action=$action, itemsCount=${newItems.size}")
+			try {
+				intent.putExtra(EXTRA_INTENT_PROCESSED, true)
+				intent.action = null
+				intent.removeExtra(Intent.EXTRA_TEXT)
+				intent.removeExtra(Intent.EXTRA_STREAM)
+				intent.clipData = null
+			} catch (e: Exception) {
+				Log.w(TAG, "Failed to clear intent extras: ${e.message}")
+			}
 			pendingItems.addAll(newItems)
 			sendPendingSharedItems(context)
 			return true
