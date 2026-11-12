@@ -131,7 +131,7 @@ class GraffitiService : Service() {
 			val powerManager = applicationContext.getSystemService(POWER_SERVICE) as PowerManager
 			val isInteractive = powerManager.isInteractive
 			val isPluggedIn = isDevicePluggedIn()
-			val isServerOrRelay = (p2pInstance.serverPort != null) || p2pInstance.isRelayEnabled()
+			val isServerOrRelay = (p2pInstance.serverPort != null) || p2pInstance.isRelayEnabled() || p2pInstance.isBridgeEnabled()
 			val useBackgroundMode = !isInteractive && !isPluggedIn && !isServerOrRelay
 			val wasBackground = p2pInstance.isBackgroundMode()
 			p2pInstance.setBackgroundMode(useBackgroundMode)
