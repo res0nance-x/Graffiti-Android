@@ -1,0 +1,302 @@
+package r3.net.tcp
+
+import r3.io.*
+import r3.source.Source
+import r3.thread.pthread
+import r3.util.srnd
+import java.io.*
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicInteger
+
+open class TCPNode protected constructor(
+	private val socket: Socket?,
+	val blockHandler: BlockHandler,
+	open val remoteAddress: InetSocketAddress,
+	open val remotePort: Int = remoteAddress.port
+) : Closeable {
+	constructor(
+		socket: Socket,
+		blockHandler: BlockHandler = SimpleBlockHandler()
+	) : this(
+		socket,
+		blockHandler,
+		socket.remoteSocketAddress as InetSocketAddress,
+		(socket.remoteSocketAddress as InetSocketAddress).port
+	)
+
+	constructor(
+		socket: Socket,
+		contentHandler: (TCPNode, ByteArray, ByteArray?) -> Unit
+	) : this(socket, SimpleBlockHandler(contentHandler = contentHandler))
+
+	constructor(
+		socket: Socket,
+		tempDir: File,
+		contentHandler: (TCPNode, ByteArray, File?) -> Unit
+	) : this(socket, TCPBlockHandler(tempDir, contentHandler = contentHandler))
+
+	private val outDeque = LinkedBlockingDeque<TCPBlock>(100)
+	private val dis = socket?.let { DataInputStream(BufferedInputStream(it.getInputStream(), DEFAULT_COPY_BUFFER_SIZE)) }
+	private val dos = socket?.let { DataOutputStream(BufferedOutputStream(it.getOutputStream(), DEFAULT_COPY_BUFFER_SIZE)) }
+
+	@Volatile
+	protected var closeRequested = false
+
+	/** Timestamp when this TCPNode was created. */
+	val connectedAtMs: Long = System.currentTimeMillis()
+
+	/** Updated on every received block — used by the application-level ping scheduler. */
+	@Volatile
+	var lastActivityMs: Long = connectedAtMs
+		protected set
+
+	@Volatile
+	var lastWriteMs: Long = connectedAtMs
+		protected set
+
+	/**
+	 * Optional interceptor invoked on readThread when a bridge-reserved block (id <= -2L) arrives.
+	 * Bypasses [blockHandler] completely so bridged blocks never create temporary stream files.
+	 */
+	@Volatile
+	var bridgeBlockInterceptor: ((node: TCPNode, block: TCPBlock) -> Unit)? = null
+
+	private val activeSendStreams = AtomicInteger(0)
+
+	val activeSendStreamsCount: Int
+		get() = activeSendStreams.get()
+
+	val activeReceiveStreams: Int
+		get() = blockHandler.activeStreamsCount(this)
+
+	fun isSending(): Boolean = activeSendStreams.get() > 0
+
+	fun isReceiving(): Boolean = blockHandler.activeStreamsCount(this) > 0
+
+	fun isTransferring(): Boolean = isSending() || isReceiving()
+
+	@Volatile
+	var onTransferStateChanged: ((isTransferring: Boolean) -> Unit)? = null
+
+	internal fun notifyTransferState() {
+		val transferring = isTransferring()
+		try {
+			onTransferStateChanged?.invoke(transferring)
+		} catch (_: Exception) {}
+	}
+
+	/**
+	 * Called exactly once when this node closes (remote disconnect, timeout, or explicit close).
+	 * Cleared immediately before invocation so it can never fire twice.
+	 */
+	@Volatile
+	var onClose: (() -> Unit)? = null
+
+	init {
+		if (socket != null && dis != null && dos != null) {
+			try {
+				socket.tcpNoDelay = true
+				socket.keepAlive = true
+			} catch (e: Exception) {
+				log("TCPNode: Failed to set socket options: $e")
+			}
+
+			pthread {
+				try {
+					while (!Thread.currentThread().isInterrupted) {
+						val block = TCPBlock.read(dis)
+						lastActivityMs = System.currentTimeMillis()
+						if (block.id <= -2L) {
+							bridgeBlockInterceptor?.invoke(this, block)
+						} else {
+							blockHandler.handle(this, block)
+						}
+					}
+				} catch (e: Throwable) {
+					if (!e.isNormalSocketClose(socket)) {
+						log("TCPNode readThread: $e for $this")
+					}
+				} finally {
+					this.close()
+				}
+			}
+			pthread {
+				try {
+					var batchStartTime = System.nanoTime()
+					var batchBytes = 0L
+					while (!Thread.currentThread().isInterrupted) {
+						val block = outDeque.take()
+						// ID can not be -1 normally, so use it as a signal to close
+						if (block.id == -1L) {
+							dos.flush()
+							break
+						}
+						block.write(dos)
+						lastWriteMs = System.currentTimeMillis()
+						batchBytes += block.data.size
+						if (outDeque.isEmpty() || block.last || batchBytes >= 4 * 1024 * 1024) {
+							dos.flush()
+							val elapsedMs = (System.nanoTime() - batchStartTime) / 1_000_000
+							// Adaptive percentage delay: pause for 15% of transmission time of this 4MB batch.
+							// Provides a clean 10-25ms airtime breather for Wi-Fi ACKs and MLO link rebalancing, tracking at ~87% of peak channel speed.
+							if (batchBytes >= 1024 * 1024 && elapsedMs > 5) {
+								val pauseMs = (elapsedMs * 0.15).toLong().coerceIn(5, 50)
+								try {
+									Thread.sleep(pauseMs)
+								} catch (_: InterruptedException) {
+									break
+								}
+							}
+							batchStartTime = System.nanoTime()
+							batchBytes = 0L
+						}
+					}
+				} catch (e: Throwable) {
+					if (!e.isNormalSocketClose(socket)) {
+						log("TCPNode writeThread: $e for $this")
+					}
+				} finally {
+					this.close()
+				}
+			}
+		}
+	}
+
+	fun send(header: ByteArray) {
+		if (closeRequested) return
+		val id = srnd.nextLong() and 0x7fffffffffffffff
+		send(TCPBlock(id, header, true))
+	}
+
+	fun sendPriority(header: ByteArray) {
+		if (closeRequested) return
+		val id = srnd.nextLong() and 0x7fffffffffffffff
+		sendPriority(TCPBlock(id, header, true))
+	}
+
+	fun send(header: ByteArray, file: File) {
+		if (closeRequested) return
+		FileInputStream(file).buffered(DEFAULT_COPY_BUFFER_SIZE).use {
+			send(header, it)
+		}
+	}
+
+	fun send(header: ByteArray, arr: ByteArray) {
+		if (closeRequested) return
+		ByteArrayInputStream(arr).use {
+			send(header, it)
+		}
+	}
+
+	fun send(header: ByteArray, writable: Writable) {
+		if (closeRequested) return
+		send(header, writable.serialize())
+	}
+
+	fun send(header: ByteArray, source: Source) {
+		if (closeRequested) return
+		source.createInputStream().buffered(DEFAULT_COPY_BUFFER_SIZE).use {
+			send(header, it)
+		}
+	}
+
+	fun send(header: ByteArray, istream: InputStream) {
+		if (closeRequested) return
+		activeSendStreams.incrementAndGet()
+		notifyTransferState()
+		try {
+			val id = srnd.nextLong() and 0x7fffffffffffffff
+			val block = TCPBlock(id, header, false)
+			send(block)
+			val arr = ByteArray(TCPBlock.MAXBLOCKSIZE)
+			var read: Int
+			var last = false
+			while (!last) {
+				if (isClosed()) break
+				read = istream.readMaxBytes(arr)
+				last = read < arr.size
+				send(TCPBlock(id, arr.copyOf(read), last))
+			}
+		} finally {
+			activeSendStreams.decrementAndGet()
+			notifyTransferState()
+		}
+	}
+
+	open fun send(block: TCPBlock) {
+		if (isClosed()) return
+		while (!isClosed()) {
+			if (outDeque.offer(block, 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+				return
+			}
+			if (System.currentTimeMillis() - lastWriteMs > 30_000L) {
+				log("TCPNode: Write queue stalled for >30s on $this, closing connection")
+				close()
+				return
+			}
+		}
+	}
+
+	open fun sendPriority(block: TCPBlock) {
+		if (isClosed()) return
+		while (!isClosed()) {
+			if (outDeque.offerFirst(block, 200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+				return
+			}
+			if (System.currentTimeMillis() - lastWriteMs > 30_000L) {
+				log("TCPNode: Priority write queue stalled for >30s on $this, closing connection")
+				close()
+				return
+			}
+		}
+	}
+
+	/**
+	 * Bounded-wait offer used by a Bridge when forwarding blocks from one peer to another.
+	 * Prevents a slow/stalled recipient from blocking the sender's read thread indefinitely.
+	 */
+	fun offerBridgeBlock(block: TCPBlock, priority: Boolean, timeoutMs: Long = 5_000L): Boolean {
+		if (isClosed()) return false
+		val deadline = System.currentTimeMillis() + timeoutMs
+		while (!isClosed()) {
+			val wait = (deadline - System.currentTimeMillis()).coerceIn(1L, 200L)
+			val offered = if (priority) {
+				outDeque.offerFirst(block, wait, java.util.concurrent.TimeUnit.MILLISECONDS)
+			} else {
+				outDeque.offer(block, wait, java.util.concurrent.TimeUnit.MILLISECONDS)
+			}
+			if (offered) return true
+			if (System.currentTimeMillis() >= deadline) return false
+		}
+		return false
+	}
+
+	open fun forceClose() {
+		blockHandler.onNodeClosed(this)
+		if (socket != null && dos != null && dis != null) {
+			closeAll(dos, dis, socket)
+		}
+	}
+
+	override fun close() {
+		if (closeRequested) return
+		closeRequested = true
+		val cb = onClose
+		onClose = null
+		try { cb?.invoke() } catch (_: Exception) { }
+		outDeque.clear()
+		outDeque.offer(TCPBlock(-1, ByteArray(0), true))
+		forceClose()
+	}
+
+	open fun isClosed(): Boolean {
+		val s = socket ?: return closeRequested
+		return closeRequested || s.isClosed || !s.isConnected || s.isInputShutdown || s.isOutputShutdown
+	}
+
+	override fun toString(): String {
+		return "Node ${remoteAddress.address.hostAddress}:$remotePort"
+	}
+}

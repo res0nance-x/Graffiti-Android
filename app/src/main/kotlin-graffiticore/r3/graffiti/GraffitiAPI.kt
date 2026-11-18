@@ -1,0 +1,1444 @@
+package r3.graffiti
+
+import org.nanohttpd.protocols.http.response.Response
+import org.nanohttpd.protocols.http.response.Status
+import r3.content.*
+import r3.http.ContentHandler
+import r3.io.DEFAULT_COPY_BUFFER_SIZE
+import r3.io.log
+import r3.io.serialize
+import r3.key.Key256
+import r3.org.json.JSONArray
+import r3.org.json.JSONObject
+import r3.pack.BinaryPack
+import r3.pack.DirPack
+import r3.pack.Pack
+import r3.pke.*
+import r3.source.FileSink
+import r3.source.FileSource
+import r3.source.readString
+import java.io.DataInputStream
+import java.io.File
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.URLDecoder
+import java.util.*
+import java.util.concurrent.ConcurrentHashMap
+
+class GraffitiAPI(val p2p: GraffitiP2P, val sendToAll: (JSONObject) -> Unit) : ContentHandler {
+	private val settingsFile = File(p2p.graffitiDir, "settings.json")
+
+	val stateManager = StateManager(p2p) { v ->
+		sendToAll(
+			JSONObject()
+				.put("event", "state_changed")
+				.put("version", v)
+		)
+	}
+
+	val commandQueue = CommandQueue(p2p, stateManager)
+
+	init {
+		stateManager.activeCommandsSupplier = { commandQueue.listActive() }
+		commandQueue.onCommandUpdated = { cmd ->
+			sendToAll(
+				JSONObject()
+					.put("event", "command_updated")
+					.put("command", cmd.toJson())
+			)
+		}
+
+		// Wire up p2p event callbacks — p2p is always ready at construction.
+		p2p.addOnNodeConnectedListener { _, _ ->
+			stateManager.onNodesChanged()
+		}
+		p2p.addOnNodeDisconnectedListener { _ ->
+			stateManager.onNodesChanged()
+		}
+		p2p.addOnNodeIdentifiedListener { _, _ ->
+			stateManager.onNodesChanged()
+		}
+		p2p.addOnTransferStateChangedListener { _ ->
+			stateManager.onTransferChanged()
+		}
+		p2p.addOnMessageReceivedListener { _ ->
+			stateManager.onMessagesChanged()
+		}
+		p2p.addOnPeerReceivedListener { _ ->
+			stateManager.onPeersChanged()
+		}
+		p2p.onContentProgress = { key, bytesWritten, totalBytes ->
+			val percent = if (totalBytes > 0) ((bytesWritten * 100) / totalBytes).toInt().coerceIn(0, 100) else 0
+			sendToAll(JSONObject().apply {
+				put("event", "content_progress")
+				put("messageKey", key.toString())
+				put("bytesWritten", bytesWritten)
+				put("totalBytes", totalBytes)
+				put("progress", percent)
+			})
+		}
+		p2p.onContentDownloadFailed = { key, error ->
+			sendToAll(JSONObject().apply {
+				put("event", "content_download_failed")
+				put("messageKey", key.toString())
+				put("error", error)
+			})
+		}
+		p2p.setWhitelistEnabled(loadSetting("graffiti:whitelist-enabled") == "true")
+	}
+
+	// ── Helpers ───────────────────────────────────────────────────────────────
+	private fun ok(build: JSONObject.() -> Unit = {}): Content {
+		return JsonContent(JSONObject().put("ok", true).apply(build).toString())
+	}
+
+	private fun err(msg: String, status: Status = Status.BAD_REQUEST): Content {
+		return JsonContent(JSONObject().put("ok", false).put("error", msg).toString())
+	}
+
+	private fun dispatch(header: JSONObject, content: Content?): Content? {
+		val path = header.get("path")
+		return when (path) {
+			"/api/state" -> serveState()
+			"/api/avatar" -> serveAvatar(header)
+			"/api/identities" -> listIdentities()
+			"/api/identity/create" -> createIdentity(header, content)
+			"/api/identity/persist" -> persistIdentity(header)
+			"/api/identity/ignore" -> ignoreIdentity(header)
+			"/api/identity/remove" -> removeIdentity(header)
+			"/api/identity/to-peer" -> identityToPeer(header)
+			"/api/whitelist" -> handleWhitelist(header)
+			"/api/peers" -> listPeers(header)
+			"/api/peer/export" -> exportPeer(header)
+			"/api/peer/import" -> content?.let { importPeer(header, it) }
+			"/api/peer/remove" -> removePeer(header)
+			"/api/messages" -> listMessages()
+			"/api/messages/export" -> exportMessages(header)
+			"/api/messages/import" -> importMessages(content)
+			"/api/message/meta" -> getMessageMeta(header, content)
+			"/api/messages/meta" -> getMessageMeta(header, content)
+			"/api/messages/refresh" -> refreshMessages(header)
+			"/api/message/remove" -> removeMessage(header)
+			"/api/message/ignore" -> ignoreMessage(header)
+			"/api/content/ignore" -> ignoreMessage(header)
+			"/api/message/forward" -> forwardMessage(header)
+			"/api/message/send/text" -> content?.let { sendTextMessage(header, it) }
+			"/api/message/send/file" -> content?.let { sendFileMessage(header, it) }
+			"/api/message/download" -> downloadMessage(header)
+			"/api/p2plink/download" -> downloadMessage(header)
+			"/api/content" -> getContent(header)
+			"/api/storage" -> getStorageInfo()
+			"/api/storage/purge" -> purgeStorage(header)
+			"/api/storage/quota" -> if (header.has("quota")) setQuota(header) else getQuota()
+			"/api/server/start" -> startServer(header)
+			"/api/server/stop" -> stopServer()
+			"/api/client/connect" -> connect(header)
+			"/api/client/disconnect" -> disconnect(header)
+			"/api/node/info" -> info(header)
+			"/api/node/relay" -> relay(header)
+			"/api/node/bridge" -> bridge(header)
+			"/api/server/status" -> status(header)
+			"/api/connections" -> connections()
+			"/api/discover" -> if (header.optBoolean("scan")) discover(true) else discover(false)
+			"/api/store" -> handleStore(header, content)
+			"/api/pack/open" -> openPackApi(header, content)
+			"/api/pack/close" -> closePackApi(header)
+			"/api/portal/open" -> openPortalApi(header, content)
+			"/api/pack/create/begin" -> beginPackCreation(header)
+			"/api/pack/create/file" -> content?.let { uploadPackFile(header, it) } ?: err("No file content provided")
+			"/api/pack/create/finish" -> finishPackCreation(header)
+			"/api/pack/create/cancel" -> cancelPackCreation(header)
+			"/api/commands/active" -> listActiveCommands()
+			"/api/command/status" -> getCommandStatus(header)
+			"/api/command/cancel" -> cancelCommand(header)
+			"/api/transfer/status" -> transferStatus()
+			"/api/version" -> getVersion()
+			"/api/open-url" -> openUrlApi(header, content)
+			else -> null
+		}
+	}
+
+	private fun listActiveCommands(): Content {
+		val arr = JSONArray()
+		commandQueue.listActive().forEach { arr.put(it.toJson()) }
+		return ok { put("commands", arr) }
+	}
+
+	private fun getCommandStatus(header: JSONObject): Content {
+		val id = header.optString("commandId").ifEmpty { header.optString("id") }
+		if (id.isEmpty()) return err("Missing 'commandId' parameter")
+		val cmd = commandQueue.get(id) ?: return err("Command not found")
+		return ok { put("command", cmd.toJson()) }
+	}
+
+	private fun cancelCommand(header: JSONObject): Content {
+		val id = header.optString("commandId").ifEmpty { header.optString("id") }
+		if (id.isEmpty()) return err("Missing 'commandId' parameter")
+		val cancelled = commandQueue.cancel(id)
+		return if (cancelled) ok() else err("Command not found or already finished")
+	}
+
+	private fun serveState(): Content {
+		return JsonContent(stateManager.getStateJson().toString())
+	}
+
+	private fun transferStatus(): Content {
+		return ok {
+			put("transferring", p2p.isAnyTransferActive())
+		}
+	}
+
+	// ── Open URL API ─────────────────────────────────────────────────────────
+	private val onOpenUrlListeners = mutableListOf<(url: String) -> Boolean>()
+
+	fun addOnOpenUrlListener(listener: (url: String) -> Boolean) {
+		onOpenUrlListeners.add(listener)
+	}
+
+	private fun openUrlApi(header: JSONObject, content: Content?): Content {
+		val bodyParams = content?.let {
+			try {
+				JSONObject(it.readString())
+			} catch (_: Exception) {
+				null
+			}
+		}
+		val params = bodyParams ?: header.optJSONObject("param")
+		val rawUrl = (params?.optString("url") ?: header.optString("url", "")).trim()
+		if (rawUrl.isEmpty()) {
+			return err("Missing 'url' parameter")
+		}
+		if (!rawUrl.startsWith("http://", ignoreCase = true) && !rawUrl.startsWith("https://", ignoreCase = true)) {
+			return err("Only http and https links are permitted")
+		}
+
+		if (onOpenUrlListeners.isEmpty()) {
+			return err("Open URL handler not registered", Status.NOT_IMPLEMENTED)
+		}
+		var anyHandled = false
+		for (listener in onOpenUrlListeners) {
+			try {
+				if (listener(rawUrl)) {
+					anyHandled = true
+				}
+			} catch (e: Exception) {
+				log(e)
+			}
+		}
+		return if (anyHandled) ok() else err("Failed to open URL")
+	}
+
+	// ── Version API ───────────────────────────────────────────────────────────
+	private val onGetVersionListeners = mutableListOf<() -> String>()
+
+	fun addOnGetVersionListener(listener: () -> String) {
+		onGetVersionListeners.add(listener)
+	}
+
+	private fun getVersion(): Content {
+		var customVersion: String? = null
+		for (listener in onGetVersionListeners) {
+			try {
+				val v = listener().takeIf { it.isNotBlank() }
+				if (v != null) {
+					customVersion = v
+					break
+				}
+			} catch (e: Exception) {
+				log(e)
+			}
+		}
+		val ver = customVersion ?: run {
+			try {
+				val stream = GraffitiAPI::class.java.getResourceAsStream("/web/build-date.txt")
+				stream?.bufferedReader()?.use { it.readText().trim() }?.takeIf { it.isNotBlank() } ?: run {
+					val location = GraffitiAPI::class.java.protectionDomain?.codeSource?.location
+					if (location != null) {
+						val file = File(location.toURI())
+						if (file.exists()) {
+							java.time.Instant.ofEpochMilli(file.lastModified())
+								.atZone(java.time.ZoneId.systemDefault())
+								.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd:HH"))
+						} else "Unknown"
+					} else "Unknown"
+				}
+			} catch (_: Exception) {
+				"Unknown"
+			}
+		}
+		return ok { put("version", ver) }
+	}
+
+	// ── Pack & Portal Viewing API ─────────────────────────────────────────────
+	private val onOpenPackListeners =
+		mutableListOf<(source: r3.source.Source, fileName: String, password: String?) -> Pair<String, Int>>()
+	private val onOpenPackInstanceListeners =
+		mutableListOf<(pack: Pack, title: String) -> Pair<String, Int>>()
+	private val onClosePackListeners = mutableListOf<(sessionId: String) -> Unit>()
+
+	fun addOnOpenPackListener(listener: (source: r3.source.Source, fileName: String, password: String?) -> Pair<String, Int>) {
+		onOpenPackListeners.add(listener)
+	}
+
+	fun addOnOpenPackInstanceListener(listener: (pack: Pack, title: String) -> Pair<String, Int>) {
+		onOpenPackInstanceListeners.add(listener)
+	}
+
+	fun addOnClosePackListener(listener: (sessionId: String) -> Unit) {
+		onClosePackListeners.add(listener)
+	}
+
+	private fun openPortalApi(header: JSONObject, content: Content?): Content {
+		val bodyParams = content?.let {
+			try {
+				JSONObject(it.readString())
+			} catch (_: Exception) {
+				null
+			}
+		}
+		val params = bodyParams ?: header.optJSONObject("param")
+		val isSelf = params?.optBoolean("self", false) == true ||
+			header.optBoolean("self", false) ||
+			params?.optString("self") == "true" ||
+			header.optString("self") == "true"
+		val host = (params?.optString("host") ?: header.optString("host", "")).trim()
+		val port = params?.optInt("port", 0)?.takeIf { it != 0 } ?: header.optInt("port", 0)
+		val peerKeyStr = (params?.optString("peerKey") ?: header.optString("peerKey", "")).trim()
+
+		val (portalPack: Pack, title: String) = if (isSelf || (host.isEmpty() && port == 0 && peerKeyStr.isEmpty())) {
+			Pair(p2p.createPortalPack(null), "${p2p.serverIdentity.key.name} Portal")
+		} else {
+			val node = when {
+				host.isNotEmpty() && port != 0 -> p2p.findConnectedNode(host, port)
+				peerKeyStr.isNotEmpty() -> p2p.getNodeForPeer(PeerKey(peerKeyStr))
+				else -> null
+			} ?: return err("Connected node not found for portal request")
+			val alias = p2p.getNodeAlias(node)
+			Pair(p2p.createPortalPack(node), "$alias Portal")
+		}
+
+		if (onOpenPackInstanceListeners.isEmpty()) {
+			return err("Portal viewer handler not registered", Status.INTERNAL_ERROR)
+		}
+		var lastException: Exception? = null
+		for (listener in onOpenPackInstanceListeners) {
+			try {
+				val (sessionId, listenPort) = listener(portalPack, title)
+				return ok {
+					put("sessionId", sessionId)
+					put("port", listenPort)
+					put("url", "http://localhost:$listenPort/")
+				}
+			} catch (e: Exception) {
+				lastException = e
+				log(e)
+			}
+		}
+		return err(lastException?.message ?: "Failed to open portal")
+	}
+
+	private fun openPackApi(header: JSONObject, content: Content?): Content {
+		val bodyParams = content?.let {
+			try {
+				JSONObject(it.readString())
+			} catch (_: Exception) {
+				null
+			}
+		}
+		val params = bodyParams ?: header.optJSONObject("param")
+		val pathStr = params?.optString("path", null)
+		val encKey = params?.optString("encKey", null)
+		val password = params?.optString("password", null).takeIf { !it.isNullOrEmpty() }
+
+		val (source: r3.source.Source, fileName: String) = when {
+			!encKey.isNullOrEmpty() -> {
+				try {
+					val key = EncryptedMetaKey(encKey)
+					val content = p2p.getContent(key)
+					Pair(content, content.path)
+				} catch (e: Exception) {
+					return err("Failed to retrieve pack content: ${e.message}")
+				}
+			}
+
+			!pathStr.isNullOrEmpty() -> {
+				val file = File(pathStr)
+				if (!file.exists()) return err("File does not exist: ${file.name}")
+				Pair(FileSource(file), file.name)
+			}
+
+			else -> return err("Missing 'path' or 'encKey' parameter")
+		}
+		if (onOpenPackListeners.isEmpty()) {
+			return err("Pack handler not registered", Status.INTERNAL_ERROR)
+		}
+		var lastException: Exception? = null
+		for (listener in onOpenPackListeners) {
+			try {
+				val (sessionId, port) = listener(source, fileName, password)
+				return ok {
+					put("sessionId", sessionId)
+					put("port", port)
+					put("url", "http://localhost:$port/")
+				}
+			} catch (e: Exception) {
+				lastException = e
+				val errMsg = e.message ?: ""
+				if (errMsg == "PASSWORD_REQUIRED" || errMsg == "INVALID_PASSWORD") {
+					return err(errMsg, Status.UNAUTHORIZED)
+				}
+				log(e)
+			}
+		}
+		val errMsg = lastException?.message ?: "Failed to open pack"
+		return err(errMsg)
+	}
+
+	private fun closePackApi(header: JSONObject): Content {
+		val sessionId = header.optString("sessionId", null) ?: return err("Missing 'sessionId' parameter")
+		for (listener in onClosePackListeners) {
+			try {
+				listener(sessionId)
+			} catch (e: Exception) {
+				log(e)
+			}
+		}
+		return ok()
+	}
+
+	// ── Pack Creation API ─────────────────────────────────────────────────────
+	private data class PackStagingSession(
+		val sessionId: String,
+		val identityKey: IdentityKey,
+		val peerKey: PeerKey,
+		val packName: String,
+		val stagingDir: File,
+		val createdAt: Long = System.currentTimeMillis()
+	)
+
+	private val packStagingSessions = ConcurrentHashMap<String, PackStagingSession>()
+
+	private fun beginPackCreation(header: JSONObject): Content {
+		// Clean up sessions older than 30 minutes
+		val now = System.currentTimeMillis()
+		val stale = packStagingSessions.filterValues { now - it.createdAt > 30 * 60 * 1000L }
+		for ((id, sess) in stale) {
+			packStagingSessions.remove(id)
+			sess.stagingDir.deleteRecursively()
+		}
+
+		val keys = resolveSendKeys(header) ?: return err("Select a sender and recipient first")
+		val (idenKey, peerKey) = keys
+		val fileParam = header.optString("name").takeIf { it.isNotEmpty() }
+			?: header.optString("packName").takeIf { it.isNotEmpty() }
+			?: "archive.pack"
+		val decodedName = try {
+			URLDecoder.decode(fileParam, "UTF-8")
+		} catch (_: Exception) {
+			fileParam
+		}
+		val packName = if (decodedName.endsWith(".pack", ignoreCase = true)) decodedName else "$decodedName.pack"
+
+		val sessionId = UUID.randomUUID().toString()
+		val stagingDir = File(p2p.tmpDir, "pack_stage_$sessionId")
+		if (!stagingDir.mkdirs()) {
+			return err("Failed to create staging directory")
+		}
+
+		val session = PackStagingSession(sessionId, idenKey, peerKey, packName, stagingDir)
+		packStagingSessions[sessionId] = session
+		stateManager.setEncoding(true)
+		return ok { put("sessionId", sessionId) }
+	}
+
+	private fun sanitizeRelativePath(rawPath: String): String {
+		val decoded = try { URLDecoder.decode(rawPath, "UTF-8") } catch (_: Exception) { rawPath }
+		val p = decoded.replace('\\', '/').trim().trimStart('/')
+		val parts = p.split('/').filter { it.isNotEmpty() && it != "." && it != ".." }
+		return parts.joinToString(File.separator)
+	}
+
+	private fun uploadPackFile(header: JSONObject, content: Content): Content {
+		val sessionId = header.optString("sessionId")
+		if (sessionId.isEmpty()) return err("Missing 'sessionId' parameter")
+		val session = packStagingSessions[sessionId] ?: return err("Pack staging session not found or expired")
+
+		val paramObj = header.optJSONObject("param")
+		val pathParam = header.optString("filePath").takeIf { it.isNotEmpty() }
+			?: header.optString("file-path").takeIf { it.isNotEmpty() }
+			?: paramObj?.optString("filePath")?.takeIf { it.isNotEmpty() }
+			?: paramObj?.optString("path")?.takeIf { it.isNotEmpty() }
+			?: header.optString("file").takeIf { it.isNotEmpty() && it != "file" }
+			?: paramObj?.optString("file")?.takeIf { it.isNotEmpty() }
+			?: return err("Missing 'path' parameter")
+
+		val sanitized = sanitizeRelativePath(pathParam)
+		if (sanitized.isEmpty()) return err("Invalid path")
+
+		val destFile = File(session.stagingDir, sanitized)
+		if (!destFile.canonicalFile.startsWith(session.stagingDir.canonicalFile)) {
+			return err("Path traversal detected")
+		}
+
+		destFile.parentFile?.mkdirs()
+		try {
+			destFile.outputStream().buffered(DEFAULT_COPY_BUFFER_SIZE).use { out ->
+				content.createInputStream().buffered(DEFAULT_COPY_BUFFER_SIZE).use { inp ->
+					inp.copyTo(out, DEFAULT_COPY_BUFFER_SIZE)
+				}
+			}
+		} catch (e: Exception) {
+			return err("Failed to write staged file: ${e.message}")
+		}
+
+		return ok()
+	}
+
+	private fun finishPackCreation(header: JSONObject): Content {
+		val sessionId = header.optString("sessionId")
+		if (sessionId.isEmpty()) return err("Missing 'sessionId' parameter")
+		val session = packStagingSessions.remove(sessionId) ?: return err("Pack staging session not found or expired")
+
+		val isAsync = header.optBoolean("async", false) || header.optString("async") == "true"
+		if (isAsync) {
+			val ts = p2p.nextMonotonicTimestamp()
+			val cmd = Command(
+				type = CommandType.CREATE_PACK,
+				identityKey = session.identityKey,
+				peerKey = session.peerKey,
+				sentTimestamp = ts,
+				payload = CommandPayload.PackPayload(session.stagingDir, session.packName)
+			)
+			commandQueue.submit(cmd)
+			return ok {
+				put("commandId", cmd.id)
+				put("sentTimestamp", ts)
+			}
+		}
+
+		val iden = p2p.getIdentityByKey(session.identityKey) ?: run {
+			session.stagingDir.deleteRecursively()
+			stateManager.setEncoding(false)
+			return err("No identity found for ${session.identityKey}")
+		}
+		val peer = p2p.getPeerByKey(session.peerKey) ?: p2p.getIdentityByKey(IdentityKey(session.peerKey.arr))?.asPeer() ?: run {
+			session.stagingDir.deleteRecursively()
+			stateManager.setEncoding(false)
+			return err("No peer found for ${session.peerKey}")
+		}
+
+		try {
+			val encKey = p2p.encryptPackFromStagingDir(
+				stagingDir = session.stagingDir,
+				packName = session.packName,
+				tempId = session.sessionId,
+				authorIdentity = iden,
+				recipientPeer = peer
+			)
+			p2p.pushNewMessage(encKey)
+			stateManager.onMessagesChanged()
+			return ok { put("key", encKey.toString()) }
+		} catch (e: Exception) {
+			log("Pack creation failed: ${e.message}")
+			return err("Failed to build pack archive: ${e.message}")
+		} finally {
+			stateManager.setEncoding(false)
+		}
+	}
+
+	private fun cancelPackCreation(header: JSONObject): Content {
+		val sessionId = header.optString("sessionId")
+		if (sessionId.isNotEmpty()) {
+			val session = packStagingSessions.remove(sessionId)
+			session?.stagingDir?.deleteRecursively()
+		}
+		stateManager.setEncoding(false)
+		return ok()
+	}
+
+
+
+	// ── Identity ──────────────────────────────────────────────────────────────
+	private fun listIdentities(): Content {
+		val arr = JSONArray()
+		p2p.listIdentities()
+			.sortedWith(compareBy({ it.key.name.lowercase() }, { it.key.toString() }))
+			.forEach { iden ->
+				val keyStr = iden.key.toString()
+				arr.put(
+					JSONObject()
+						.put("name", iden.key.name)
+						.put("key", keyStr)
+						.put("peerKey", iden.asPeer().key.toString())
+						.put("persistent", p2p.isIdentityPersistent(iden.key))
+						.put("ignored", p2p.isIdentityIgnored(iden.key))
+				)
+			}
+		return ok { put("identities", arr) }
+	}
+
+	private fun createIdentity(header: JSONObject, content: Content?): Content {
+		val seed = content?.let {
+			try {
+				JSONObject(it.readString()).optString("seed", null)
+			} catch (_: Exception) {
+				null
+			}
+		} ?: header.optString("seed", null) ?: return err("Missing 'seed' parameter")
+		val iden = p2p.createIdentity(seed)
+		stateManager.onIdentitiesChanged()
+		stateManager.onMessagesChanged()
+		return ok { put("name", iden.key.name).put("key", iden.key) }
+	}
+
+	private fun removeIdentity(header: JSONObject): Content {
+		val keyStr = header.getString("key")
+		val removed = p2p.removeIdentity(IdentityKey(keyStr))
+		if (removed) {
+			stateManager.onIdentitiesChanged()
+			stateManager.onMessagesChanged()
+			return ok()
+		}
+		return err("Identity not found")
+	}
+
+	private fun persistIdentity(header: JSONObject): Content {
+		val keyStr = header.getString("key")
+		val persistent = header.optBoolean("persistent", true)
+		val key = IdentityKey(keyStr)
+		val success = p2p.setIdentityPersistence(key, persistent)
+		if (success) {
+			stateManager.onIdentitiesChanged()
+			return ok()
+		}
+		return err("Identity not found or failed to set persistence")
+	}
+
+	private fun ignoreIdentity(header: JSONObject): Content {
+		val keyStr = header.optString("key")
+		if (keyStr.isEmpty()) return err("Missing key parameter")
+		val key = IdentityKey(keyStr)
+		val ignored = if (header.has("ignored")) header.getBoolean("ignored") else !p2p.isIdentityIgnored(key)
+		p2p.setIdentityIgnored(key, ignored)
+		stateManager.onIdentitiesChanged()
+		return ok { put("ignored", ignored) }
+	}
+
+	private fun identityToPeer(header: JSONObject): Content {
+		val keyStr = header.optString("key").ifEmpty { header.optString("idKey") }
+		if (keyStr.isEmpty()) return err("Missing key parameter")
+		val iden = p2p.getIdentityByKey(IdentityKey(keyStr)) ?: return err("Identity not found for $keyStr")
+		val peer = iden.asPeer()
+		p2p.savePeer(peer)
+		stateManager.onPeersChanged()
+		return ok {
+			put("name", peer.key.name)
+			put("key", peer.key.toString())
+		}
+	}
+
+	private fun handleWhitelist(header: JSONObject): Content {
+		if (header.has("enabled")) {
+			val enabled = header.optBoolean("enabled", false) || header.optString("enabled") == "true"
+			p2p.setWhitelistEnabled(enabled)
+			saveSetting("graffiti:whitelist-enabled", enabled.toString())
+			stateManager.onWhitelistChanged()
+			return ok { put("enabled", enabled) }
+		}
+		return ok { put("enabled", p2p.isWhitelistEnabled()) }
+	}
+
+	// ── Peer ──────────────────────────────────────────────────────────────────
+	private fun listPeers(header: JSONObject): Content {
+		val arr = JSONArray()
+		p2p.listPeers()
+			.sortedWith(compareBy({ it.key.name.lowercase() }, { it.key }))
+			.forEach { peer ->
+				val keyStr = peer.key
+				arr.put(
+					JSONObject()
+						.put("name", peer.key.name)
+						.put("key", keyStr)
+				)
+			}
+		return ok { put("peers", arr) }
+	}
+
+	private fun importPeer(header: JSONObject, content: Content): Content {
+		val peer = try {
+			Peer.read(DataInputStream(content.createInputStream()))
+		} catch (e: Exception) {
+			return err("Invalid peer file: ${e.message}")
+		}
+		p2p.savePeer(peer)
+		stateManager.onPeersChanged()
+		return ok { put("name", peer.key.name).put("key", peer.key) }
+	}
+
+	/** POST param: {@code key} (PeerKey as string) */
+	private fun removePeer(header: JSONObject): Content {
+		val keyStr = header.getString("key")
+		val removed = p2p.removePeer(PeerKey(keyStr))
+		if (removed) {
+			stateManager.onPeersChanged()
+			return ok()
+		}
+		return err("Peer not found")
+	}
+
+	/** GET param: {@code key} — returns the peer file as a download */
+	private fun exportPeer(header: JSONObject): Content {
+		val keyStr = header.getString("key")
+		val peerKey = PeerKey(keyStr)
+		val peer = p2p.getPeerByKey(peerKey)
+			?: p2p.getIdentityByKey(IdentityKey(peerKey.arr))?.asPeer()
+			?: error("No peer or identity found for $keyStr")
+		return BinaryContent(
+			peer.serialize(),
+			path = "${peer.key}",
+			ext = "application/octet-stream"
+		)
+	}
+// ── Message ───────────────────────────────────────────────────────────────
+	/** Builds the display JSON for a single message. Shared by listMessages and WS push. */
+	private fun buildMsgJson(eMeta: EncryptedContentMetaData, meta: ContentMeta, fileTime: Long? = null): JSONObject {
+		val effectiveFileTime = fileTime
+			?: p2p.getMetaTimeByKey(eMeta.key)
+			?: System.currentTimeMillis()
+		return JSONObject()
+			.put("key", eMeta.key.toString())
+			.put("author", eMeta.author.name)
+			.put("authorKey", eMeta.author.toString())
+			.put("recipient", eMeta.recipient.name)
+			.put("recipientKey", eMeta.recipient.toString())
+			.put("name", meta.name)
+			.put("size", meta.length)
+			.put("type", meta.type)
+			.put("created", meta.created)
+			.put("fileTime", effectiveFileTime)
+			.put("ignored", p2p.isContentIgnored(eMeta.key))
+	}
+
+	private fun listMessages(): Content {
+		val identities = p2p.listIdentities().associateBy { it.key }
+
+		data class Entry(val fileTime: Long, val key: EncryptedMetaKey, val json: JSONObject)
+
+		val entries = mutableListOf<Entry>()
+		p2p.listAllMeta().forEach { eMeta ->
+			try {
+				val key = eMeta.key
+				if (identities[eMeta.recipient] == null) return@forEach
+				val fileTime = p2p.getMetaTimeByKey(key) ?: System.currentTimeMillis()
+				val obj = JSONObject()
+					.put("key", key.toString())
+					.put("author", eMeta.author.name)
+					.put("authorKey", eMeta.author.toString())
+					.put("recipient", eMeta.recipient.name)
+					.put("recipientKey", eMeta.recipient.toString())
+					.put("fileTime", fileTime)
+					.put("hasContent", p2p.hasContent(key))
+					.put("ignored", p2p.isContentIgnored(key))
+				entries.add(Entry(fileTime, key, obj))
+			} catch (_: Exception) {
+			}
+		}
+		val sortedEntries = entries.sortedBy { it.fileTime }
+		p2p.triggerMetaWarmup(sortedEntries.asReversed().map { it.key })
+
+		val arr = JSONArray()
+		sortedEntries.forEach { arr.put(it.json) }
+		return ok { put("messages", arr) }
+	}
+
+	private fun getMessageMeta(header: JSONObject, content: Content? = null): Content {
+		return try {
+			val bodyJson = content?.let {
+				try {
+					JSONObject(it.readString())
+				} catch (_: Exception) {
+					null
+				}
+			}
+			val keysArr = bodyJson?.optJSONArray("keys") ?: header.optJSONArray("keys")
+			val singleKey = bodyJson?.optString("key")?.takeIf { it.isNotEmpty() }
+				?: header.optString("key").takeIf { it.isNotEmpty() }
+			val keysParam = header.optString("keys").takeIf { it.isNotEmpty() }
+
+			if (keysArr != null || keysParam != null) {
+				val keyStrings: List<String> = when {
+					keysArr != null -> (0 until keysArr.length()).map { keysArr.getString(it) }
+					keysParam != null && keysParam.startsWith("[") -> {
+						val arr = JSONArray(keysParam)
+						(0 until arr.length()).map { arr.getString(it) }
+					}
+					keysParam != null -> keysParam.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+					else -> emptyList()
+				}
+				val metasArr = JSONArray()
+				keyStrings.forEach { kStr ->
+					try {
+						val k = EncryptedMetaKey(kStr)
+						val pair = p2p.getDecryptedMeta(k)
+						if (pair != null) {
+							val (meta, _) = pair
+							val fileTime = p2p.getMetaTimeByKey(k) ?: meta.created
+							metasArr.put(
+								JSONObject()
+									.put("key", k.toString())
+									.put("name", meta.name)
+									.put("size", meta.length)
+									.put("type", meta.type)
+									.put("created", meta.created)
+									.put("fileTime", fileTime)
+									.put("hasContent", p2p.hasContent(k))
+									.put("ignored", p2p.isContentIgnored(k))
+							)
+						}
+					} catch (_: Exception) {}
+				}
+				return ok { put("metas", metasArr) }
+			}
+
+			if (singleKey != null) {
+				val k = EncryptedMetaKey(singleKey)
+				val pair = p2p.getDecryptedMeta(k) ?: return err("Metadata not found or cannot decrypt")
+				val (meta, _) = pair
+				val fileTime = p2p.getMetaTimeByKey(k) ?: meta.created
+				val obj = JSONObject()
+					.put("key", k.toString())
+					.put("name", meta.name)
+					.put("size", meta.length)
+					.put("type", meta.type)
+					.put("created", meta.created)
+					.put("fileTime", fileTime)
+					.put("hasContent", p2p.hasContent(k))
+					.put("ignored", p2p.isContentIgnored(k))
+				return ok { put("meta", obj) }
+			}
+
+			ok { put("metas", JSONArray()) }
+		} catch (e: Exception) {
+			err("Failed to get message metadata: ${e.message}")
+		}
+	}
+
+	private fun refreshMessages(header: JSONObject? = null): Content {
+		if (header?.optBoolean("full", false) == true) {
+			p2p.resetPeerQueryTimes()
+		}
+		p2p.syncAllConnectedNodes()
+		return ok()
+	}
+
+	private fun getContent(header: JSONObject): Content {
+		val keyStr = header.getString("key")
+		val key = EncryptedMetaKey(keyStr)
+		return p2p.getContent(key)
+	}
+
+	private fun getStorageInfo(): Content {
+		val identities = p2p.listIdentities()
+		val sizeMap = mutableMapOf<IdentityKey, Long>()
+		identities.forEach { iden ->
+			sizeMap[iden.key] = 0L
+		}
+
+		p2p.listAllMeta().forEach { eMeta ->
+			try {
+				val contentSize = p2p.getContentSize(eMeta.key)
+				sizeMap[eMeta.recipient] = sizeMap.getOrDefault(eMeta.recipient, 0L) + contentSize
+			} catch (_: Exception) {
+			}
+		}
+		val totalOverall = p2p.totalContentSize.get()
+		val arr = JSONArray()
+		sizeMap.entries
+			.sortedWith(compareBy({ it.key.name.lowercase() }, { it.key.toString() }))
+			.forEach { (key, size) ->
+				val keyStr = key.toString()
+				arr.put(
+					JSONObject()
+						.put("name", key.name)
+						.put("key", keyStr)
+						.put("size", size)
+				)
+			}
+
+		return ok {
+			put("overall", totalOverall)
+			put("storage", arr)
+		}
+	}
+
+	private fun getQuota(): Content {
+		return ok {
+			put("quota", p2p.getQuotaBytes())
+		}
+	}
+
+	private fun setQuota(header: JSONObject): Content {
+		val quotaStr = header.getString("quota")
+		val quota = quotaStr.toLongOrNull() ?: return err("Invalid 'quota' parameter")
+		p2p.setQuotaBytes(quota)
+		return ok()
+	}
+
+	private fun startServer(header: JSONObject): Content {
+		val port = header.getInt("port")
+		p2p.startTCPServer(port)
+		val actualPort = p2p.serverPort ?: port
+		stateManager.onServerStatusChanged()
+		return ok { put("port", actualPort) }
+	}
+
+	private fun stopServer(): Content {
+		p2p.stopTCPServer()
+		stateManager.onServerStatusChanged()
+		return ok()
+	}
+
+	private fun connect(header: JSONObject): Content {
+		val nodes = header.optJSONArray("node") ?: JSONArray().put(header.getString("node"))
+		val port = header.getInt("port")
+		var lastError: Exception? = null
+		val length = nodes.length()
+		for (i in 0 until length) {
+			val n = nodes.getString(i)
+			val node = n.trim()
+			if (node.isEmpty()) continue
+			try {
+				val addr = InetAddress.getByName(node)
+				if (addr.isLinkLocalAddress) continue
+				if (port < 0) {
+					p2p.connectBridgedPeer(node, port)
+				} else {
+					p2p.getTCPNode(InetSocketAddress(addr, port))
+				}
+				p2p.syncAllConnectedNodes()
+				return ok()
+			} catch (e: Exception) {
+				lastError = e
+				log("Connect failed for $node: ${e.message}")
+			}
+		}
+		return err("Failed to connect: ${lastError?.message}")
+	}
+
+	private fun disconnect(header: JSONObject): Content {
+		val node = header.getString("node")
+		val port = header.getInt("port")
+		p2p.disconnect(node, port)
+		return ok()
+	}
+
+	private fun purgeStorage(header: JSONObject): Content {
+		val keyStr = header.getString("key")
+		val type = header.getString("type")
+		val targetKey = IdentityKey(keyStr)
+
+		data class MsgEntry(val key: EncryptedMetaKey, val lastModified: Long)
+
+		val matchedMessages = mutableListOf<MsgEntry>()
+
+		p2p.listAllMeta().forEach { eMeta ->
+			try {
+				if (eMeta.recipient == targetKey) {
+					val time = p2p.getMetaTimeByKey(eMeta.key) ?: 0L
+					matchedMessages.add(MsgEntry(eMeta.key, time))
+				}
+			} catch (_: Exception) {
+			}
+		}
+
+		matchedMessages.sortBy { it.lastModified }
+		val toDelete = if (type == "half") {
+			matchedMessages.take(matchedMessages.size / 2)
+		} else {
+			matchedMessages
+		}
+		var count = 0
+		toDelete.forEach { msg ->
+			if (p2p.deleteMessage(msg.key)) {
+				count++
+			}
+		}
+
+		if (count > 0) {
+			p2p.saveMetaIndex()
+			stateManager.onMessagesChanged()
+		}
+
+		return ok {
+			put("purged", count)
+		}
+	}
+
+	private fun removeMessage(header: JSONObject): Content {
+		val key = header.getString("key")
+		p2p.deleteMessage(EncryptedMetaKey(key))
+		stateManager.onMessagesChanged()
+		return ok()
+	}
+
+	private fun exportMessages(header: JSONObject): Content {
+		val keysArr = header.optJSONArray("keys")
+		val singleKey = header.optString("key").takeIf { it.isNotEmpty() }
+		val identityKeyStr = header.optString("identity").takeIf { it.isNotEmpty() }
+
+		val keys = mutableListOf<EncryptedMetaKey>()
+		if (singleKey != null) {
+			keys.add(EncryptedMetaKey(singleKey))
+		} else if (keysArr != null) {
+			for (i in 0 until keysArr.length()) {
+				keys.add(EncryptedMetaKey(keysArr.getString(i)))
+			}
+		} else if (identityKeyStr != null) {
+			keys.addAll(p2p.getMessagesForIdentity(IdentityKey(identityKeyStr)))
+		}
+
+		if (keys.isEmpty()) {
+			return err("No messages found to export")
+		}
+
+		val tempPackFile = File.createTempFile("graffiti_export_", ".pmsg", p2p.tmpDir)
+		val exportedCount = p2p.exportMessages(keys, tempPackFile)
+		if (exportedCount == 0 || !tempPackFile.exists() || tempPackFile.length() == 0L) {
+			tempPackFile.delete()
+			return err("No valid messages could be exported")
+		}
+
+		val filename = if (singleKey != null) {
+			val meta = p2p.getDecryptedMeta(EncryptedMetaKey(singleKey))?.first
+			val safeName = meta?.name?.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+			if (!safeName.isNullOrBlank()) "${safeName}.pmsg" else "message_${singleKey.take(8)}.pmsg"
+		} else if (identityKeyStr != null) {
+			val idenName = p2p.getIdentityByKey(IdentityKey(identityKeyStr))?.key?.name?.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+			val safeIden = if (!idenName.isNullOrBlank()) idenName else identityKeyStr.take(8)
+			"${safeIden}_messages.pmsg"
+		} else {
+			"graffiti_messages.pmsg"
+		}
+
+		header.put("exportFilename", filename)
+
+		return FileContent(tempPackFile, path = filename, ext = "pmsg")
+	}
+
+	private fun importMessages(content: Content?): Content {
+		if (content == null) return err("No pack file provided")
+		return try {
+			val result = p2p.importPack(content)
+			stateManager.onMessagesChanged()
+			if (result.importedPeers > 0) {
+				stateManager.onPeersChanged()
+			}
+			ok {
+				put("imported", result.importedMessages)
+				put("skipped", result.skippedMessages)
+				put("peers", result.importedPeers)
+			}
+		} catch (e: Exception) {
+			log("Failed to import portable messages pack: ${e.message}")
+			err("Failed to import portable messages: ${e.message}")
+		}
+	}
+
+	private fun ignoreMessage(header: JSONObject): Content {
+		val keyStr = header.optString("key").takeIf { it.isNotEmpty() } ?: return err("Missing 'key' parameter")
+		val key = EncryptedMetaKey(keyStr)
+		val ignored = if (header.has("ignored")) header.getBoolean("ignored") else !p2p.isContentIgnored(key)
+		p2p.setContentIgnored(key, ignored)
+		stateManager.onMessagesChanged()
+		return ok { put("ignored", ignored) }
+	}
+
+	private fun forwardMessage(header: JSONObject): Content {
+		val keyStr = header.optString("key").takeIf { it.isNotEmpty() } ?: return err("Missing 'key' parameter")
+		val keys = resolveSendKeys(header) ?: return err("Select a sender and recipient first")
+		val (idenKey, peerKey) = keys
+		val iden = p2p.getIdentityByKey(idenKey) ?: return err("No identity found for $idenKey")
+		val peer = p2p.getPeerByKey(peerKey) ?: p2p.getIdentityByKey(IdentityKey(peerKey.arr))?.asPeer() ?: return err("No peer found for $peerKey")
+		val msgKey = EncryptedMetaKey(keyStr)
+		if (!p2p.hasContent(msgKey)) {
+			return err("Message content is not available locally")
+		}
+		val content = try {
+			p2p.getContent(msgKey)
+		} catch (e: Exception) {
+			return err("Failed to read message content: ${e.message}")
+		}
+		val isAsync = header.optBoolean("async", false) || header.optString("async") == "true"
+		if (isAsync) {
+			val ts = p2p.nextMonotonicTimestamp()
+			val cmd = Command(
+				type = CommandType.FORWARD,
+				identityKey = idenKey,
+				peerKey = peerKey,
+				sentTimestamp = ts,
+				payload = CommandPayload.Forward(msgKey)
+			)
+			commandQueue.submit(cmd)
+			return ok {
+				put("commandId", cmd.id)
+				put("sentTimestamp", ts)
+			}
+		}
+
+		val wrappedContent = MutableMetaDataContent(
+			content,
+			lastModified = System.currentTimeMillis()
+		)
+		stateManager.setEncoding(true)
+		try {
+			val encKey = p2p.pkeEncrypt(wrappedContent, iden, peer)
+			p2p.pushNewMessage(encKey)
+			stateManager.onMessagesChanged()
+			return ok { put("key", encKey.toString()) }
+		} finally {
+			stateManager.setEncoding(false)
+		}
+	}
+
+	private fun resolveSendKeys(header: JSONObject): Pair<IdentityKey, PeerKey>? {
+		var idKeyStr = header.optString("identityKey").takeIf { it.isNotEmpty() }
+			?: header.optString("sender").takeIf { it.isNotEmpty() }
+		if (idKeyStr == null) {
+			idKeyStr = loadSetting("graffiti:last-from-key").takeIf { it.isNotEmpty() }
+				?: p2p.listIdentities().firstOrNull()?.key?.toString()
+		}
+		if (idKeyStr.isNullOrEmpty()) return null
+
+		var peerKeyStr = header.optString("peerKey").takeIf { it.isNotEmpty() }
+			?: header.optString("recipient").takeIf { it.isNotEmpty() }
+		if (peerKeyStr == null) {
+			peerKeyStr = loadSetting("graffiti:last-to-key").takeIf { it.isNotEmpty() }
+				?: p2p.listPeers().firstOrNull()?.key?.toString()
+				?: p2p.listIdentities().firstOrNull()?.asPeer()?.key?.toString()
+		}
+		if (peerKeyStr.isNullOrEmpty()) return null
+
+		return Pair(IdentityKey(idKeyStr), PeerKey(peerKeyStr))
+	}
+
+	private fun sendTextMessage(header: JSONObject, content: Content): Content {
+		val keys = resolveSendKeys(header) ?: return err("Select a sender and recipient first")
+		val (idenKey, peerKey) = keys
+		val text = content.readString()
+		val iden = p2p.getIdentityByKey(idenKey) ?: return err("No identity found for $idenKey")
+		val peer = p2p.getPeerByKey(peerKey) ?: p2p.getIdentityByKey(IdentityKey(peerKey.arr))?.asPeer() ?: return err("No peer found for $peerKey")
+		val isAsync = header.optBoolean("async", false) || header.optString("async") == "true"
+		if (isAsync) {
+			val ts = p2p.nextMonotonicTimestamp()
+			val cmd = Command(
+				type = CommandType.SEND_TEXT,
+				identityKey = idenKey,
+				peerKey = peerKey,
+				sentTimestamp = ts,
+				payload = CommandPayload.Text(text)
+			)
+			commandQueue.submit(cmd)
+			return ok {
+				put("commandId", cmd.id)
+				put("sentTimestamp", ts)
+			}
+		}
+
+		val textContent = TextContent(text)
+		stateManager.setEncoding(true)
+		try {
+			val encKey = p2p.pkeEncrypt(textContent, iden, peer)
+			p2p.pushNewMessage(encKey)
+			stateManager.onMessagesChanged()
+			return ok { put("key", encKey.toString()) }
+		} finally {
+			stateManager.setEncoding(false)
+		}
+	}
+
+	private fun sendFileMessage(header: JSONObject, content: Content?): Content {
+		if (content == null) return err("No file content provided")
+		val keys = resolveSendKeys(header) ?: return err("Select a sender and recipient first")
+		val (idenKey, peerKey) = keys
+		val fileParam = header.optString("file").takeIf { it.isNotEmpty() } ?: "file"
+		val originalName = try {
+			URLDecoder.decode(fileParam, "UTF-8")
+		} catch (_: Exception) {
+			fileParam
+		}
+		val iden = p2p.getIdentityByKey(idenKey) ?: return err("No identity found for $idenKey")
+		val peer = p2p.getPeerByKey(peerKey) ?: p2p.getIdentityByKey(IdentityKey(peerKey.arr))?.asPeer() ?: return err("No peer found for $peerKey")
+		val isAsync = header.optBoolean("async", false) || header.optString("async") == "true"
+		if (isAsync) {
+			val stagedFile = File(p2p.tmpDir, "upload_${UUID.randomUUID()}.tmp")
+			try {
+				stagedFile.outputStream().buffered(DEFAULT_COPY_BUFFER_SIZE).use { out ->
+					content.createInputStream().buffered(DEFAULT_COPY_BUFFER_SIZE).use { inp ->
+						inp.copyTo(out, DEFAULT_COPY_BUFFER_SIZE)
+					}
+				}
+			} catch (e: Exception) {
+				if (stagedFile.exists()) stagedFile.delete()
+				return err("Failed to stage uploaded file: ${e.message}")
+			}
+			val ts = p2p.nextMonotonicTimestamp()
+			val cmd = Command(
+				type = CommandType.SEND_FILE,
+				identityKey = idenKey,
+				peerKey = peerKey,
+				sentTimestamp = ts,
+				payload = CommandPayload.FilePayload(stagedFile, originalName)
+			)
+			commandQueue.submit(cmd)
+			return ok {
+				put("commandId", cmd.id)
+				put("sentTimestamp", ts)
+			}
+		}
+
+		val wrappedContent = MutableMetaDataContent(content).apply {
+			path = originalName
+			ext = originalName.substringAfterLast('.', "").lowercase()
+		}
+		stateManager.setEncoding(true)
+		try {
+			val encKey = p2p.pkeEncrypt(wrappedContent, iden, peer)
+			p2p.pushNewMessage(encKey)
+			stateManager.onMessagesChanged()
+			return ok { put("key", encKey.toString()) }
+		} finally {
+			stateManager.setEncoding(false)
+		}
+	}
+
+	private fun downloadMessage(header: JSONObject): Content {
+		val keyStr = header.optString("key").takeIf { it.isNotEmpty() } ?: return err("Missing 'key' parameter")
+		val key = EncryptedMetaKey(keyStr)
+		if (p2p.hasContent(key)) return ok { put("status", "already_have_content") }
+		val started = p2p.requestContentDownload(key)
+		if (!started) return err("No connected peer currently available with this content")
+		return ok {
+			put("status", "download_started")
+			put("key", keyStr)
+		}
+	}
+
+	private fun serveAvatar(header: JSONObject): Content {
+		val keyStr = header.getString("key") ?: return err("Missing 'key' parameter")
+		val key = Key256(keyStr)
+		val svg = getAvatar(key)
+		return BinaryContent(svg.toByteArray(Charsets.UTF_8), ext = "svg", path = key.name)
+	}
+
+	/** Returns the current list of active TCP connections (both inbound and outbound). */
+	private fun connections(): Content {
+		val arr = JSONArray()
+		p2p.listConnections().forEach { info ->
+			val obj = JSONObject()
+				.put("host", info.addr.address.hostAddress)
+				.put("port", info.port)
+				.put("inbound", info.inbound)
+				.put("relay", info.isRelay)
+				.put("bridge", info.isBridge)
+				.put("bridged", info.isBridged)
+			if (info.peerKey != null) {
+				obj.put("peerKey", info.peerKey)
+				obj.put("peerName", PeerKey(info.peerKey).name)
+			}
+			arr.put(obj)
+		}
+		return ok { put("connections", arr) }
+	}
+
+	/**
+	 * Starts async peer discovery and returns immediately.
+	 * Each discovered peer is pushed to all WebSocket clients as:
+	 *   { "event": "discover_result", "ips": [...], "port": N, "key": "..." }
+	 * When discovery finishes, a final event is sent:
+	 *   { "event": "discover_done" }
+	 */
+	private fun discover(scan: Boolean): Content {
+		p2p.discoverAsync(
+			scan,
+			found = { info ->
+				sendToAll(
+					JSONObject()
+						.put("event", "discover_result")
+						.put("ips", JSONArray(info.addrList.map { it.hostAddress }))
+						.put("port", info.port)
+						.put("key", info.serverKey.toString())
+						.put("name", info.serverKey.name)
+						.put("relay", info.isRelay)
+						.put("bridge", info.isBridge)
+				)
+			},
+			done = {
+				sendToAll(
+					JSONObject().put("event", "discover_done")
+				)
+			}
+		)
+		return ok()
+	}
+
+	private fun getLocalIPs(): List<String> {
+		val ips = mutableListOf<String>()
+		try {
+			val interfaces = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
+			while (interfaces.hasMoreElements()) {
+				val iface = interfaces.nextElement()
+				if (iface.isLoopback || !iface.isUp) continue
+				val addresses = iface.inetAddresses ?: continue
+				while (addresses.hasMoreElements()) {
+					val addr = addresses.nextElement()
+					if (addr.isLoopbackAddress || addr.isLinkLocalAddress) continue
+					val ip = addr.hostAddress ?: continue
+					if (ip.contains("%") || ip.contains(":")) continue
+					ips.add(ip)
+				}
+			}
+		} catch (e: Exception) {
+			log("Failed to get local IPs: ${e.message}")
+		}
+		return if (ips.isEmpty()) listOf("127.0.0.1") else ips
+	}
+
+	private fun info(header: JSONObject): Content {
+		return ok {
+			put("peerKey", p2p.serverIdentity.key.toString())
+			put("peerName", p2p.serverIdentity.key.name)
+			put("defaultP2PPort", p2p.defaultP2PPort)
+			put("ips", JSONArray(getLocalIPs()))
+			put("portalDir", p2p.portalDir.absolutePath)
+		}
+	}
+
+	private fun relay(header: JSONObject): Content {
+		val hasEnabled = header.has("enabled")
+		if (hasEnabled) {
+			val enabled = header.getBoolean("enabled")
+			p2p.setRelayEnabled(enabled)
+			stateManager.onRelayChanged()
+		}
+		return ok { put("relay", p2p.isRelayEnabled()) }
+	}
+
+	private fun bridge(header: JSONObject): Content {
+		val hasEnabled = header.has("enabled")
+		if (hasEnabled) {
+			val enabled = header.getBoolean("enabled")
+			p2p.setBridgeEnabled(enabled)
+			stateManager.onBridgeChanged()
+		}
+		return ok { put("bridge", p2p.isBridgeEnabled()) }
+	}
+
+	private fun status(header: JSONObject): Content {
+		val port = p2p.serverPort
+		return ok { put("running", port != null); if (port != null) put("port", port) }
+	}
+
+	private fun saveSetting(key: String, value: String) {
+		synchronized(settingsFile) {
+			val obj = if (settingsFile.exists()) {
+				try {
+					JSONObject(settingsFile.readText())
+				} catch (e: Exception) {
+					JSONObject()
+				}
+			} else {
+				JSONObject()
+			}
+			obj.put(key, value)
+			settingsFile.writeText(obj.toString(2))
+		}
+	}
+
+	private fun loadSetting(key: String): String {
+		return synchronized(settingsFile) {
+			if (!settingsFile.exists()) ""
+			else {
+				try {
+					val obj = JSONObject(settingsFile.readText())
+					obj.optString(key, "")
+				} catch (e: Exception) {
+					""
+				}
+			}
+		}
+	}
+
+	private fun loadAllSettings(): JSONObject {
+		return synchronized(settingsFile) {
+			if (!settingsFile.exists()) JSONObject()
+			else {
+				try {
+					JSONObject(settingsFile.readText())
+				} catch (e: Exception) {
+					JSONObject()
+				}
+			}
+		}
+	}
+
+	private fun deleteSetting(key: String) {
+		synchronized(settingsFile) {
+			if (settingsFile.exists()) {
+				try {
+					val obj = JSONObject(settingsFile.readText())
+					if (obj.has(key)) {
+						obj.remove(key)
+						settingsFile.writeText(obj.toString(2))
+					}
+				} catch (_: Exception) {
+				}
+			}
+		}
+	}
+
+	private fun handleStore(header: JSONObject, content: Content?): Content {
+		val method = header.optString("method", "GET")
+		val key = header.optString("key", "")
+		return when (method) {
+			"PUT" -> {
+				if (key.isEmpty()) return err("Missing 'key' parameter")
+				val value = content?.readString() ?: ""
+				saveSetting(key, value)
+				ok()
+			}
+			"DELETE" -> {
+				if (key.isEmpty()) return err("Missing 'key' parameter")
+				deleteSetting(key)
+				ok()
+			}
+			else -> { // GET
+				if (key.isEmpty()) {
+					val all = loadAllSettings()
+					ok { put("settings", all) }
+				} else {
+					val value = loadSetting(key)
+					ok { put("value", value) }
+				}
+			}
+		}
+	}
+
+	override fun handle(header: JSONObject, content: Content?): Content? {
+		return try {
+			dispatch(header, content)
+		} catch (e: Exception) {
+			log("API Error in dispatch for ${header.optString("path")}", e)
+			err(e.message ?: "Unknown error")
+		}
+	}
+
+	override fun onResponse(header: JSONObject, response: Response) {
+		response.addHeader("Cache-Control", "no-store")
+		val path = header.optString("path")
+		if (path == "/api/messages/export") {
+			val filename = header.optString("exportFilename").takeIf { it.isNotEmpty() } ?: "portable_messages.pmsg"
+			response.addHeader("Content-Disposition", "attachment; filename=\"$filename\"")
+		}
+	}
+}

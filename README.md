@@ -168,3 +168,18 @@ An Android application (minSdk 33, targetSdk 37, compileSdk 37) utilizing WebVie
   * Graffiti-Android/app/src/main/java/r3/graffiti/WebViewActivity.kt: Fullscreen WebView rendering `index.html` from assets.
   * Graffiti-Android/app/src/main/java/r3/graffiti/PackViewActivity.kt: View and WebView UI for inspecting and downloading packs.
   * Graffiti-Android/app/src/main/java/r3/graffiti/UriSource.kt: Android Storage Access Framework (SAF) adapter for R3 streaming.
+
+---
+
+### License
+
+This project is licensed under the [MIT License](LICENSE).
+
+Embedded third-party components in the shared `R3` and `GraffitiCore` source trees retain their original open-source licenses:
+- `org.nanohttpd.*` (NanoHTTPD / NanoWSD): **BSD 3-Clause License** (`WebSocketManager.kt` is original MIT-licensed code)
+- `r3.org.json.*` (JSON-java): **Public Domain**
+- `r3.upnp.*` (WaifUPnP): **GNU Lesser General Public License v2.1 or later (`LGPL-2.1-or-later`)**
+- `font/GMF.woff2` (Material Symbols Outlined) & AndroidX libraries: **Apache License 2.0**
+
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for full license texts and attribution details.
+

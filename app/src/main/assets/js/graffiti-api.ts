@@ -1,0 +1,685 @@
+/**
+ * Graffiti API Client — ES module (TypeScript)
+ *
+ * Import: import { graffiti } from './graffiti-api.js';
+ *
+ * Thin async wrapper around the GraffitiAPI HTTP endpoints served by the
+ * embedded NanoHTTPD server. All methods return Promises. On an application-
+ * level error (ok: false) the Promise is rejected with the server's error
+ * message. On a network/HTTP error the Promise is rejected with a generic
+ * message.
+ */
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface ApiOk {
+   ok: true;
+}
+
+export interface IdentityEntry {
+   name: string;
+   key: string;
+   /** The Peer key derived from this identity — used as the recipient key when sending. */
+   peerKey: string;
+   persistent?: boolean;
+   ignored?: boolean;
+}
+
+export interface PeerEntry {
+   name: string;
+   key: string;
+}
+
+export interface MessageEntry {
+   key: string;
+   author: string;
+   authorKey?: string;
+   recipient: string;
+   recipientKey?: string;
+   name?: string;
+   size?: number;
+   type?: string;
+   created?: number | string;
+   fileTime?: number;
+   hasContent?: boolean;
+   ignored?: boolean;
+}
+
+export interface DecryptedMessageMeta {
+   key: string;
+   name: string;
+   size: number;
+   type: string;
+   created: number | string;
+   fileTime?: number;
+   hasContent?: boolean;
+   ignored?: boolean;
+}
+
+export interface ConnectionEntry {
+   host: string;
+   port: number;
+   inbound: boolean;
+   peerKey?: string;
+   peerName?: string;
+   relay?: boolean;
+   bridge?: boolean;
+   bridged?: boolean;
+}
+
+export interface NodeStateEntry extends ConnectionEntry {
+   isTransferring?: boolean;
+   isSending?: boolean;
+   isReceiving?: boolean;
+}
+
+export interface AppStateResponse extends ApiOk {
+   version: number;
+   transferring: boolean;
+   encoding: boolean;
+   nodesVersion: number;
+   nodes: NodeStateEntry[];
+   identitiesVersion: number;
+   identities: IdentityEntry[];
+   peersVersion: number;
+   peers: PeerEntry[];
+   messagesVersion: number;
+   messageKeys: string[];
+   relay?: boolean;
+   bridge?: boolean;
+   whitelist?: boolean;
+   server?: {
+      running: boolean;
+      port: number;
+   };
+   activeCommands?: ActiveCommand[];
+}
+
+export interface NodeInfo extends ApiOk {
+   peerKey: string;
+   peerName: string;
+   defaultP2PPort: number;
+   ips: string[];
+   portalDir?: string;
+}
+
+export interface NodeRelayStatus extends ApiOk {
+   relay: boolean;
+}
+
+export interface NodeBridgeStatus extends ApiOk {
+   bridge: boolean;
+}
+
+
+export interface ServerStatus extends ApiOk {
+   running: boolean;
+   port: number;
+}
+
+export interface ListIdentitiesResponse extends ApiOk {
+   identities: IdentityEntry[];
+}
+
+export interface ListPeersResponse extends ApiOk {
+   peers: PeerEntry[];
+}
+
+export interface ListMessagesResponse extends ApiOk {
+   messages: MessageEntry[];
+}
+
+export interface ListConnectionsResponse extends ApiOk {
+   connections: ConnectionEntry[];
+}
+
+export interface CreateIdentityResponse extends ApiOk {
+   name: string;
+   key: string;
+}
+
+export interface ImportPeerResponse extends ApiOk {
+   name: string;
+   key: string;
+}
+
+export interface SendMessageResponse extends ApiOk {
+   key?: string;
+   commandId?: string;
+   sentTimestamp?: number;
+}
+
+export interface ActiveCommand {
+   id: string;
+   type: 'SEND_TEXT' | 'SEND_FILE' | 'CREATE_PACK' | 'FORWARD';
+   identityKey: string;
+   peerKey: string;
+   sentTimestamp: number;
+   status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+   progress: number;
+   statusMessage?: string;
+   error?: string;
+   resultKey?: string;
+   fileName?: string;
+   packName?: string;
+   text?: string;
+   createdAt: number;
+}
+
+export interface OpenPackResponse extends ApiOk {
+   sessionId: string;
+   port: number;
+   url: string;
+}
+
+export interface OpenPackParams {
+   path?: string;
+   encKey?: string;
+   password?: string;
+}
+
+export interface StorageItem {
+   name: string;
+   key: string;
+   size: number;
+}
+
+export interface GetStorageResponse extends ApiOk {
+   overall: number;
+   storage: StorageItem[];
+}
+
+export interface PurgeStorageResponse extends ApiOk {
+   purged: number;
+}
+
+export interface GetQuotaResponse extends ApiOk {
+   quota: number;
+}
+
+export interface GetVersionResponse extends ApiOk {
+   version: string;
+}
+
+export interface CreatePackBeginResponse extends ApiOk {
+   sessionId: string;
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+async function parseJson<T extends { ok: boolean; error?: string }>(res: Response): Promise<T> {
+   let json: T;
+   let text = '';
+   try {
+      text = await res.clone().text();
+      json = await res.json() as T;
+   } catch (_) {
+      throw new Error(`HTTP ${res.status}: response was not JSON. Content: "${text}"`);
+   }
+   if (!json.ok) throw new Error(json.error || `Request failed (HTTP ${res.status})`);
+   return json;
+}
+
+async function get<T extends { ok: boolean; error?: string }>(
+   path: string,
+   params: Record<string, string> = {},
+): Promise<T> {
+   const url = new URL(path, window.location.origin);
+   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+   return parseJson<T>(await fetch(url.toString()));
+}
+
+async function putJson<T extends { ok: boolean; error?: string }>(
+   path: string,
+   body: Record<string, any>,
+): Promise<T> {
+   const url = new URL(path, window.location.origin);
+   const res = await fetch(url.toString(), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+   });
+   return parseJson<T>(res);
+}
+
+async function postJson<T extends { ok: boolean; error?: string }>(
+   path: string,
+   body: Record<string, any>,
+): Promise<T> {
+   const url = new URL(path, window.location.origin);
+   const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+   });
+   return parseJson<T>(res);
+}
+
+
+async function download(path: string, params: Record<string, string> = {}, filename?: string): Promise<void> {
+   const url = new URL(path, window.location.origin);
+   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+
+   if ((window as any).Android && (window as any).Android.download) {
+      (window as any).Android.download(url.toString(), filename);
+      return;
+   }
+
+   const a = document.createElement('a');
+   a.href = url.toString();
+   if (filename) a.download = filename;
+   document.body.appendChild(a);
+   a.click();
+   document.body.removeChild(a);
+}
+
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export const graffiti = {
+
+   // ── State ─────────────────────────────────────────────────────────────
+
+   getState(): Promise<AppStateResponse> {
+      return get<AppStateResponse>('/api/state');
+   },
+
+   // ── Identity ──────────────────────────────────────────────────────────
+
+   listIdentities(): Promise<ListIdentitiesResponse> {
+      return get('/api/identities');
+   },
+
+   createIdentity(seed: string): Promise<CreateIdentityResponse> {
+      return putJson('/api/identity/create', { seed }) as Promise<CreateIdentityResponse>;
+   },
+
+   removeIdentity(key: string): Promise<ApiOk> {
+      return get('/api/identity/remove', {key});
+   },
+
+   setIdentityPersistence(key: string, persistent: boolean): Promise<ApiOk> {
+      return get('/api/identity/persist', {key, persistent: String(persistent)});
+   },
+
+   setIdentityIgnored(key: string, ignored?: boolean): Promise<ApiOk & { ignored?: boolean }> {
+      const params: Record<string, string> = { key };
+      if (typeof ignored === 'boolean') params.ignored = String(ignored);
+      return get('/api/identity/ignore', params);
+   },
+
+   identityToPeer(key: string): Promise<ApiOk & { name?: string; key?: string }> {
+      return get('/api/identity/to-peer', {key});
+   },
+
+   getWhitelist(): Promise<{ ok: boolean; enabled: boolean }> {
+      return get('/api/whitelist');
+   },
+
+   setWhitelist(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> {
+      return get('/api/whitelist', {enabled: String(enabled)});
+   },
+
+
+   // ── Peer ──────────────────────────────────────────────────────────────
+
+   listPeers(): Promise<ListPeersResponse> {
+      return get('/api/peers');
+   },
+
+   importPeer(file: File): Promise<ImportPeerResponse> {
+      const fd = new FormData();
+      fd.append('file', file);
+      // TODO
+      return {} as Promise<ImportPeerResponse>
+      // return postMultipart('/api/peer/import', fd);
+   },
+
+   removePeer(key: string): Promise<ApiOk> {
+      return get('/api/peer/remove', {key});
+   },
+
+   exportPeer(key: string): Promise<void> {
+      return download('/api/peer/export', {key});
+   },
+
+   // ── Message ───────────────────────────────────────────────────────────
+
+   listMessages(): Promise<ListMessagesResponse> {
+      return get('/api/messages');
+   },
+
+   getMessageMeta(key: string): Promise<{ ok: boolean; meta: DecryptedMessageMeta }> {
+      return putJson('/api/message/meta', { key });
+   },
+
+   getMessagesMeta(keys: string[]): Promise<{ ok: boolean; metas: DecryptedMessageMeta[] }> {
+      if (keys.length === 0) return Promise.resolve({ ok: true, metas: [] });
+      return putJson('/api/messages/meta', { keys });
+   },
+
+   refreshMessages(): Promise<ApiOk> {
+      return get('/api/messages/refresh');
+   },
+
+   contentUrl(key: string): string {
+      return `/api/content?key=${encodeURIComponent(key)}`;
+   },
+
+   removeMessage(key: string): Promise<ApiOk> {
+      return get('/api/message/remove', {key});
+   },
+
+   setMessageIgnored(key: string, ignored?: boolean): Promise<ApiOk & { ignored?: boolean }> {
+      const params: Record<string, string> = { key };
+      if (typeof ignored === 'boolean') params.ignored = String(ignored);
+      return get('/api/message/ignore', params);
+   },
+
+   forwardMessage(key: string, identityKey?: string, peerKey?: string, async = true): Promise<SendMessageResponse> {
+      const params: Record<string, string> = { key };
+      if (identityKey) params.identityKey = identityKey;
+      if (peerKey) params.peerKey = peerKey;
+      if (async) params.async = 'true';
+      return get('/api/message/forward', params);
+   },
+
+   async sendText(identityKey: string, peerKey: string, text: string): Promise<SendMessageResponse> {
+      const url = new URL(`/api/message/send/text?identityKey=${encodeURIComponent(identityKey)}&peerKey=${encodeURIComponent(peerKey)}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'PUT',
+         headers: {'Content-Type': 'text/plain'},
+         body: text
+      });
+      return parseJson<SendMessageResponse>(res);
+   },
+
+   async sendFile(
+      identityKey: string,
+      peerKey: string,
+      file: File,
+      async = true,
+      onProgress?: (percent: number, loaded: number, total: number) => void
+   ): Promise<SendMessageResponse> {
+      const url = new URL(
+         `/api/message/send/file?identityKey=${encodeURIComponent(identityKey)}&peerKey=${encodeURIComponent(peerKey)}&file=${encodeURIComponent(file.name)}${async ? '&async=true' : ''}`,
+         window.location.origin
+      );
+      return new Promise<SendMessageResponse>((resolve, reject) => {
+         const xhr = new XMLHttpRequest();
+         xhr.open('PUT', url.toString(), true);
+         xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+         xhr.setRequestHeader('file', encodeURIComponent(file.name));
+         if (xhr.upload && onProgress) {
+            xhr.upload.onprogress = (evt) => {
+               if (evt.lengthComputable && evt.total > 0) {
+                  const percent = Math.round((evt.loaded * 100) / evt.total);
+                  onProgress(percent, evt.loaded, evt.total);
+               }
+            };
+         }
+         xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+               try {
+                  resolve(JSON.parse(xhr.responseText) as SendMessageResponse);
+               } catch (e) {
+                  reject(e);
+               }
+            } else {
+               reject(new Error(xhr.statusText || `Upload failed with status ${xhr.status}`));
+            }
+         };
+         xhr.onerror = () => reject(new Error('Network error during upload'));
+         xhr.send(file);
+      });
+   },
+
+   async downloadMessageContent(key: string): Promise<ApiOk> {
+      return get<ApiOk>('/api/message/download', { key });
+   },
+
+   async createPackBegin(identityKey: string, peerKey: string, packName: string): Promise<CreatePackBeginResponse> {
+      const url = new URL(`/api/pack/create/begin?identityKey=${encodeURIComponent(identityKey)}&peerKey=${encodeURIComponent(peerKey)}&name=${encodeURIComponent(packName)}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'PUT'
+      });
+      return parseJson<CreatePackBeginResponse>(res);
+   },
+
+   async uploadPackFile(sessionId: string, relativePath: string, file: File | Blob): Promise<ApiOk> {
+      const url = new URL(`/api/pack/create/file?sessionId=${encodeURIComponent(sessionId)}&filePath=${encodeURIComponent(relativePath)}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'PUT',
+         headers: {
+            'Content-Type': 'application/octet-stream',
+            'file-path': encodeURIComponent(relativePath)
+         },
+         body: file
+      });
+      return parseJson<ApiOk>(res);
+   },
+
+   async createPackFinish(sessionId: string, async = true): Promise<SendMessageResponse> {
+      const url = new URL(`/api/pack/create/finish?sessionId=${encodeURIComponent(sessionId)}${async ? '&async=true' : ''}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'POST'
+      });
+      return parseJson<SendMessageResponse>(res);
+   },
+
+   async createPackCancel(sessionId: string): Promise<ApiOk> {
+      const url = new URL(`/api/pack/create/cancel?sessionId=${encodeURIComponent(sessionId)}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'POST'
+      });
+      return parseJson<ApiOk>(res);
+   },
+
+   refresh(): Promise<ApiOk> {
+      return get('/api/messages/refresh');
+   },
+
+   // ── Background Commands ───────────────────────────────────────────────
+
+   listActiveCommands(): Promise<{ ok: boolean, commands: ActiveCommand[] }> {
+      return get('/api/commands/active');
+   },
+
+   getCommandStatus(commandId: string): Promise<{ ok: boolean, command: ActiveCommand }> {
+      return get('/api/command/status', { commandId });
+   },
+
+   cancelCommand(commandId: string): Promise<ApiOk> {
+      return get('/api/command/cancel', { commandId });
+   },
+
+   // ── Avatar ────────────────────────────────────────────────────────────
+
+   avatarUrl(key: string): string {
+      return `/api/avatar?key=${encodeURIComponent(key)}`;
+   },
+
+   // ── Network ───────────────────────────────────────────────────────────
+
+   listConnections(): Promise<ListConnectionsResponse> {
+      return get('/api/connections');
+   },
+
+   serverStatus(): Promise<ServerStatus> {
+      return get('/api/server/status');
+   },
+
+   startServer(port: number): Promise<ApiOk & { port?: number }> {
+      return get('/api/server/start', {port: String(port)});
+   },
+
+   stopServer(): Promise<ApiOk> {
+      return get('/api/server/stop');
+   },
+
+   discover(scan?: boolean): Promise<ApiOk> {
+      return get('/api/discover', scan ? {scan: 'true'} : {});
+   },
+
+   connect(host: string, port: number): Promise<ApiOk> {
+      return get('/api/client/connect', {node: host, port: String(port)});
+   },
+
+   disconnect(host: string, port: number): Promise<ApiOk> {
+      return get('/api/client/disconnect', {node:host, port: String(port)});
+   },
+
+   // ── Settings ──────────────────────────────────────────────────────────
+
+   getStorage(): Promise<GetStorageResponse> {
+      return get('/api/storage');
+   },
+
+   purgeStorage(key: string, type: 'half' | 'all'): Promise<PurgeStorageResponse> {
+      return get('/api/storage/purge', {key, type}) as Promise<PurgeStorageResponse>;
+   },
+
+   getQuota(): Promise<GetQuotaResponse> {
+      return get('/api/storage/quota');
+   },
+
+   setQuota(quotaBytes: number): Promise<ApiOk> {
+      return get('/api/storage/quota', {quota: String(quotaBytes)});
+   },
+
+   // ── Portable Messages Export & Import ──────────────────────────────────────────
+   exportMessages(params: { key?: string; keys?: string[]; identity?: string }): Promise<void> {
+      const q: Record<string, string> = {};
+      if (params.key) q.key = params.key;
+      if (params.identity) q.identity = params.identity;
+      if (params.keys && params.keys.length > 0) q.keys = JSON.stringify(params.keys);
+      return download('/api/messages/export', q);
+   },
+
+   async importMessages(file: File): Promise<{ ok: boolean; imported: number; skipped: number; peers: number; error?: string }> {
+      const url = new URL('/api/messages/import', window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/octet-stream' },
+         body: file
+      });
+      return parseJson(res);
+   },
+
+
+   // ── Node identity ─────────────────────────────────────────────────────
+
+   nodeInfo(): Promise<NodeInfo> {
+      return get('/api/node/info');
+   },
+
+   nodeRelayStatus(): Promise<NodeRelayStatus> {
+      return get('/api/node/relay');
+   },
+
+   setNodeRelay(enabled: boolean): Promise<NodeRelayStatus> {
+      let e = ""
+      if (enabled) {
+         e = "true"
+      } else {
+         e = "false"
+      }
+      return get('/api/node/relay', {enabled: e}) as Promise<NodeRelayStatus>;
+   },
+
+   nodeBridgeStatus(): Promise<NodeBridgeStatus> {
+      return get('/api/node/bridge');
+   },
+
+   setNodeBridge(enabled: boolean): Promise<NodeBridgeStatus> {
+      const e = enabled ? 'true' : 'false';
+      return get('/api/node/bridge', {enabled: e}) as Promise<NodeBridgeStatus>;
+   },
+
+   async getStore(key: string): Promise<string> {
+      try {
+         const res = await get<{ ok: boolean; value?: string }>('/api/store', {key});
+         return res.value || '';
+      } catch (_) {
+         return '';
+      }
+   },
+
+   async getAllStore(): Promise<Record<string, string>> {
+      try {
+         const res = await get<{ ok: boolean; settings?: Record<string, string> }>('/api/store');
+         return res.settings || {};
+      } catch (_) {
+         return {};
+      }
+   },
+
+   async setStore(key: string, value: string): Promise<ApiOk> {
+      const url = new URL(`/api/store?key=${encodeURIComponent(key)}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'PUT',
+         body: value
+      });
+      return parseJson<ApiOk>(res);
+   },
+
+   async deleteStore(key: string): Promise<ApiOk> {
+      const url = new URL(`/api/store?key=${encodeURIComponent(key)}`, window.location.origin);
+      const res = await fetch(url.toString(), {
+         method: 'DELETE'
+      });
+      return parseJson<ApiOk>(res);
+   },
+
+   // ── Pack & Portal Viewing ───────────────────────────────────────────────
+   openPack(params: OpenPackParams): Promise<OpenPackResponse> {
+      return putJson('/api/pack/open', params);
+   },
+
+   openPortal(params: { host?: string; port?: number; peerKey?: string; self?: boolean } = {}): Promise<OpenPackResponse> {
+      return putJson('/api/portal/open', params);
+   },
+
+   closePack(sessionId: string): Promise<ApiOk> {
+      return get('/api/pack/close', { sessionId });
+   },
+
+   // ── Version ─────────────────────────────────────────────────────────────
+   async getVersion(): Promise<string> {
+      try {
+         const res = await get<GetVersionResponse>('/api/version');
+         return res.version || 'Unknown';
+      } catch (_) {
+         return 'Unknown';
+      }
+   },
+
+   // ── External URL ────────────────────────────────────────────────────────
+   openExternalUrl(url: string): Promise<ApiOk> {
+      if ((window as any).Android && typeof (window as any).Android.openUrl === 'function') {
+         try {
+            (window as any).Android.openUrl(url);
+            return Promise.resolve({ ok: true });
+         } catch (_e) {
+            // fallback to service API
+         }
+      }
+      return postJson<ApiOk>('/api/open-url', { url });
+   },
+};
+
+export async function openPackFile(params: { path?: string; encKey?: string; name?: string; password?: string }): Promise<void> {
+   try {
+      await graffiti.openPack(params);
+   } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('PASSWORD_REQUIRED') || errMsg.includes('INVALID_PASSWORD')) {
+         const pass = prompt(`Enter password for ${params.name || 'pack'}:`);
+         if (pass) {
+            await openPackFile({ ...params, password: pass });
+         }
+      } else {
+         alert(`Failed to open pack: ${errMsg}`);
+      }
+   }
+}

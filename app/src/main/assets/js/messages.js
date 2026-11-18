@@ -1,0 +1,3257 @@
+import { graffiti, openPackFile } from './graffiti-api.js';
+import { onSectionShow, onWsEvent, showSection } from './app.js';
+import { showDialog, showProgressModal } from './dialog.js';
+import { attachCustomAudioPlayer } from './audio-player.js';
+const form = document.getElementById('message-form');
+const fromField = document.getElementById('from-field');
+const toField = document.getElementById('to-field');
+const messageText = document.getElementById('message-text');
+const sendFileButton = document.getElementById('send-file');
+const fileInput = document.getElementById('file-input');
+const messagesSection = document.getElementById('section-messages');
+const messagesContainer = document.getElementById('messages');
+const msgContextMenu = document.getElementById('msg-context-menu');
+const statusEl = document.getElementById('send-status');
+let isSending = false;
+let isRefreshing = false;
+let indicatorMinTimer = null;
+let indicatorActiveUntil = 0;
+// ── Background Active Commands State ─────────────────────────────────────────
+const activeCommandsMap = new Map();
+export function applyActiveCommandsState(commands) {
+    activeCommandsMap.clear();
+    for (const cmd of commands) {
+        if (cmd.status !== 'COMPLETED' && cmd.status !== 'FAILED' && cmd.status !== 'CANCELLED') {
+            activeCommandsMap.set(cmd.id, cmd);
+        }
+    }
+    renderActiveTasks();
+    updateMsgIndicator(activeCommandsMap.size > 0);
+}
+export function handleCommandUpdate(cmd) {
+    if (cmd.status === 'COMPLETED' || cmd.status === 'FAILED' || cmd.status === 'CANCELLED') {
+        activeCommandsMap.delete(cmd.id);
+        evictCachedElement(`pending-${cmd.id}`);
+        queueRefreshMessages();
+    }
+    else {
+        activeCommandsMap.set(cmd.id, cmd);
+        const container = document.getElementById('messages');
+        const pendingEl = container?.querySelector(`[data-msg-key="pending-${cmd.id}"]`);
+        if (pendingEl) {
+            const statusSpan = pendingEl.querySelector('.pending-status-text');
+            if (statusSpan)
+                statusSpan.textContent = cmd.statusMessage || `${cmd.progress}%`;
+            const fill = pendingEl.querySelector('.pending-progress-bar');
+            if (fill)
+                fill.style.width = `${Math.max(5, cmd.progress)}%`;
+        }
+        else {
+            void applyTopicFilter(false);
+        }
+    }
+    renderActiveTasks();
+    updateMsgIndicator(activeCommandsMap.size > 0);
+}
+onWsEvent('command_updated', (msg) => {
+    if (msg.command) {
+        handleCommandUpdate(msg.command);
+    }
+});
+function renderActiveTasks() {
+    let container = document.getElementById('active-tasks-container');
+    if (!container) {
+        const composer = document.querySelector('.composer') || document.getElementById('message-form');
+        if (composer && composer.parentNode) {
+            container = document.createElement('div');
+            container.id = 'active-tasks-container';
+            composer.parentNode.insertBefore(container, composer);
+        }
+    }
+    if (!container)
+        return;
+    if (activeCommandsMap.size === 0) {
+        container.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+    container.style.gap = '0.35rem';
+    container.style.marginBottom = '0.5rem';
+    container.style.padding = '0.4rem 0.6rem';
+    container.style.background = 'rgba(0,0,0,0.15)';
+    container.style.borderRadius = '6px';
+    container.style.border = '1px solid rgba(255,255,255,0.08)';
+    container.innerHTML = '';
+    for (const cmd of activeCommandsMap.values()) {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.justifyContent = 'space-between';
+        row.style.gap = '0.75rem';
+        row.style.fontSize = '0.82rem';
+        const left = document.createElement('div');
+        left.style.display = 'flex';
+        left.style.alignItems = 'center';
+        left.style.gap = '0.4rem';
+        left.style.overflow = 'hidden';
+        left.style.textOverflow = 'ellipsis';
+        left.style.whiteSpace = 'nowrap';
+        const icon = document.createElement('span');
+        icon.className = 'nav-indicator-dot is-active';
+        icon.style.display = 'inline-block';
+        icon.style.flexShrink = '0';
+        const label = document.createElement('span');
+        const name = cmd.fileName || cmd.packName || cmd.type;
+        const statusMsg = cmd.statusMessage || `${cmd.progress}%`;
+        label.textContent = `${name}: ${statusMsg}`;
+        left.append(icon, label);
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = '✕';
+        cancelBtn.title = 'Cancel task';
+        cancelBtn.style.padding = '0.1rem 0.35rem';
+        cancelBtn.style.fontSize = '0.75rem';
+        cancelBtn.style.background = 'transparent';
+        cancelBtn.style.border = 'none';
+        cancelBtn.style.cursor = 'pointer';
+        cancelBtn.style.opacity = '0.6';
+        cancelBtn.addEventListener('click', async () => {
+            cancelBtn.disabled = true;
+            await graffiti.cancelCommand(cmd.id);
+        });
+        row.append(left, cancelBtn);
+        container.append(row);
+    }
+}
+export function updateMsgIndicator(busy) {
+    const indicator = document.getElementById('nav-msg-indicator');
+    if (!indicator)
+        return;
+    const shouldBeActive = busy || isSending || activeCommandsMap.size > 0;
+    const now = Date.now();
+    if (shouldBeActive) {
+        // Keep green light active for at least 700ms so users clearly perceive the feedback
+        indicatorActiveUntil = Math.max(indicatorActiveUntil, now + 700);
+        indicator.classList.add('is-active');
+        if (indicatorMinTimer !== null) {
+            window.clearTimeout(indicatorMinTimer);
+            indicatorMinTimer = null;
+        }
+    }
+    else {
+        if (now < indicatorActiveUntil) {
+            if (indicatorMinTimer === null) {
+                indicatorMinTimer = window.setTimeout(() => {
+                    indicatorMinTimer = null;
+                    updateMsgIndicator(false);
+                }, indicatorActiveUntil - now);
+            }
+        }
+        else {
+            if (indicatorMinTimer !== null) {
+                window.clearTimeout(indicatorMinTimer);
+                indicatorMinTimer = null;
+            }
+            indicator.classList.remove('is-active');
+        }
+    }
+}
+function setSendingState(sending) {
+    isSending = sending;
+    updateMsgIndicator(sending);
+}
+/** Tracks keys already rendered so WS-triggered refreshes don't duplicate rows. */
+const currentMessages = new Set();
+/** Tracks all known message keys on the server to prevent redundant refresh loops. */
+const allKnownMessageKeys = new Set();
+// ── Name / avatar lookup map ──────────────────────────────────────────────────
+/** Maps a display-name to its full key string for all known identities + peers. */
+const nameToKey = new Map();
+let knownIdentities = [];
+let knownPeers = [];
+export function applyMessagesContactsState(identities, peers) {
+    knownIdentities = identities;
+    knownPeers = peers;
+    nameToKey.clear();
+    for (const id of identities) {
+        nameToKey.set(id.name, id.key);
+    }
+    for (const peer of peers) {
+        nameToKey.set(peer.name, peer.key);
+    }
+    void populateSelects();
+}
+export function applyMessagesState(messageKeys) {
+    queueRefreshMessages();
+}
+function isSavedIdentity(key, identities) {
+    return identities.some(id => id.key === key && id.persistent === true);
+}
+function isSavedRecipient(key, identities, peers) {
+    if (peers.some(peer => peer.key === key)) {
+        return true;
+    }
+    return identities.some(id => id.peerKey === key && id.persistent === true);
+}
+async function saveOrClearRememberedFields() {
+    const currentFrom = fromField?.value ?? '';
+    if (currentFrom && isSavedIdentity(currentFrom, knownIdentities)) {
+        await graffiti.setStore('graffiti:last-from-key', currentFrom);
+    }
+    else {
+        await graffiti.setStore('graffiti:last-from-key', '');
+    }
+    const currentTo = toField?.value ?? '';
+    if (currentTo && isSavedRecipient(currentTo, knownIdentities, knownPeers)) {
+        await graffiti.setStore('graffiti:last-to-key', currentTo);
+    }
+    else {
+        await graffiti.setStore('graffiti:last-to-key', '');
+    }
+}
+async function refreshNameMaps() {
+    try {
+        const [{ identities }, { peers }] = await Promise.all([
+            graffiti.listIdentities(),
+            graffiti.listPeers(),
+        ]);
+        knownIdentities = identities;
+        knownPeers = peers;
+        nameToKey.clear();
+        for (const id of identities) {
+            nameToKey.set(id.name, id.key);
+        }
+        for (const peer of peers) {
+            nameToKey.set(peer.name, peer.key);
+        }
+    }
+    catch (e) {
+        console.warn('Failed to refresh name maps:', e);
+    }
+}
+let refreshTimeout = null;
+function queueRefreshMessages() {
+    if (refreshTimeout !== null)
+        return;
+    refreshTimeout = window.setTimeout(async () => {
+        refreshTimeout = null;
+        await refreshMessages();
+    }, 50);
+}
+// ── Windowed Message List State ─────────────────────────────────────────────
+const PAGE_BATCH_SIZE = 20;
+let visibleBatchCount = PAGE_BATCH_SIZE;
+let isPrepending = false;
+const textContentCache = new Map();
+const metaCache = new Map();
+let allRawMessages = [];
+let allFilteredMessages = [];
+function hydrateMsg(msg, meta) {
+    msg.name = meta.name;
+    msg.size = meta.size;
+    msg.type = meta.type;
+    msg.created = meta.created;
+    if (msg.hasContent === true) {
+        meta.hasContent = true;
+    }
+    else if (typeof meta.hasContent === 'boolean') {
+        msg.hasContent = meta.hasContent;
+    }
+    if (typeof meta.ignored === 'boolean') {
+        msg.ignored = meta.ignored;
+    }
+}
+const inFlightMetaFetches = new Map();
+async function ensureMetaForSlice(slice) {
+    const missingKeys = [];
+    const promisesToWait = [];
+    for (const m of slice) {
+        if (m.isPending || metaCache.has(m.key) || (m.type !== undefined && m.type !== '')) {
+            continue;
+        }
+        const existingPromise = inFlightMetaFetches.get(m.key);
+        if (existingPromise) {
+            promisesToWait.push(existingPromise);
+        }
+        else {
+            missingKeys.push(m.key);
+        }
+    }
+    if (missingKeys.length > 0) {
+        // Chunk missing keys into batches of at most 50 keys for PUT JSON request
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < missingKeys.length; i += BATCH_SIZE) {
+            const chunk = missingKeys.slice(i, i + BATCH_SIZE);
+            let resolveBatch;
+            const batchPromise = new Promise(resolve => {
+                resolveBatch = resolve;
+            });
+            for (const k of chunk) {
+                inFlightMetaFetches.set(k, batchPromise.then(metas => metas.find(meta => meta.key === k) || null));
+            }
+            const fetchPromise = (async () => {
+                try {
+                    const { metas } = await graffiti.getMessagesMeta(chunk);
+                    const returnedMetas = metas || [];
+                    for (const meta of returnedMetas) {
+                        metaCache.set(meta.key, meta);
+                    }
+                    // Mark any key the server couldn't decrypt / find so we don't refetch in an infinite loop
+                    for (const k of chunk) {
+                        if (!metaCache.has(k)) {
+                            metaCache.set(k, {
+                                key: k,
+                                name: 'Unknown File',
+                                size: 0,
+                                type: 'bin',
+                                created: 0,
+                                fileTime: 0
+                            });
+                        }
+                    }
+                    resolveBatch(returnedMetas);
+                }
+                catch (e) {
+                    console.warn('Failed to fetch message metadata:', e);
+                    resolveBatch([]);
+                }
+                finally {
+                    for (const k of chunk) {
+                        inFlightMetaFetches.delete(k);
+                    }
+                }
+            })();
+            promisesToWait.push(fetchPromise);
+        }
+    }
+    if (promisesToWait.length > 0) {
+        await Promise.all(promisesToWait);
+    }
+    for (const m of slice) {
+        const meta = metaCache.get(m.key);
+        if (meta) {
+            hydrateMsg(m, meta);
+        }
+    }
+}
+// ── LRU Message DOM Element Cache ──────────────────────────────────────────
+const MAX_CACHED_ELEMENTS = 300;
+const messageElementCache = new Map();
+function getCachedElement(key) {
+    const el = messageElementCache.get(key);
+    if (el) {
+        // Refresh recency in Map insertion order
+        messageElementCache.delete(key);
+        messageElementCache.set(key, el);
+    }
+    if (el) {
+        return el;
+    }
+    return null;
+}
+function putCachedElement(key, el) {
+    if (messageElementCache.has(key)) {
+        messageElementCache.delete(key);
+    }
+    else if (messageElementCache.size >= MAX_CACHED_ELEMENTS) {
+        // Evict oldest entry that is NOT currently connected to the DOM
+        for (const [k, oldEl] of messageElementCache.entries()) {
+            if (!oldEl.isConnected) {
+                messageElementCache.delete(k);
+                break;
+            }
+        }
+    }
+    messageElementCache.set(key, el);
+}
+function evictCachedElement(key) {
+    messageElementCache.delete(key);
+}
+function isMessageInSelectedTopic(msg, selectedToKey) {
+    if (!selectedToKey)
+        return false;
+    const recKey = msg.recipientKey || (msg.recipient ? nameToKey.get(msg.recipient) : '');
+    if (recKey && recKey === selectedToKey)
+        return true;
+    const iden = knownIdentities.find(id => id.peerKey === selectedToKey || id.key === selectedToKey);
+    if (iden) {
+        if (recKey && (recKey === iden.key || recKey === iden.peerKey))
+            return true;
+        if (msg.recipient && msg.recipient === iden.name)
+            return true;
+    }
+    const peer = knownPeers.find(p => p.key === selectedToKey);
+    if (peer) {
+        if (recKey && recKey === peer.key)
+            return true;
+        if (msg.recipient && msg.recipient === peer.name)
+            return true;
+    }
+    return false;
+}
+// ── Topic Last Viewed & Unread Badges State ─────────────────────────────────
+let topicLastViewed = {};
+let saveTopicLastViewedTimer = null;
+let activeToKey = '';
+async function loadTopicLastViewed() {
+    try {
+        const raw = await graffiti.getStore('graffiti:topic-last-viewed');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                topicLastViewed = parsed;
+            }
+        }
+    }
+    catch (e) {
+        console.warn('Failed to load topic-last-viewed:', e);
+    }
+}
+function scheduleSaveTopicLastViewed() {
+    if (saveTopicLastViewedTimer !== null) {
+        window.clearTimeout(saveTopicLastViewedTimer);
+    }
+    saveTopicLastViewedTimer = window.setTimeout(async () => {
+        saveTopicLastViewedTimer = null;
+        try {
+            await graffiti.setStore('graffiti:topic-last-viewed', JSON.stringify(topicLastViewed));
+        }
+        catch (e) {
+            console.warn('Failed to save topic-last-viewed:', e);
+        }
+    }, 300);
+}
+function markTopicRead(key, timestamp) {
+    if (!key)
+        return;
+    let ts = timestamp ?? Date.now();
+    if (!timestamp) {
+        for (const msg of allRawMessages) {
+            if (isMessageInSelectedTopic(msg, key)) {
+                const msgTime = typeof msg.fileTime === 'number' && msg.fileTime > 0
+                    ? msg.fileTime
+                    : Number(msg.created || 0);
+                if (msgTime > ts) {
+                    ts = msgTime;
+                }
+            }
+        }
+    }
+    const current = topicLastViewed[key] ?? 0;
+    if (ts > current) {
+        topicLastViewed[key] = ts;
+        scheduleSaveTopicLastViewed();
+    }
+}
+export function updateUnreadBadges() {
+    if (!toField)
+        return;
+    const currentSelected = toField.value;
+    let totalUnread = 0;
+    for (const opt of Array.from(toField.options)) {
+        const key = opt.value;
+        const baseName = opt.dataset.baseName || opt.textContent || '';
+        if (!key)
+            continue;
+        if (key === currentSelected) {
+            opt.textContent = baseName;
+        }
+        else {
+            const lastViewed = topicLastViewed[key] ?? 0;
+            let unreadCount = 0;
+            for (const msg of allRawMessages) {
+                if (isMessageInSelectedTopic(msg, key)) {
+                    const msgTime = typeof msg.fileTime === 'number' && msg.fileTime > 0
+                        ? msg.fileTime
+                        : Number(msg.created || 0);
+                    if (msgTime > lastViewed) {
+                        unreadCount++;
+                    }
+                }
+            }
+            if (unreadCount > 0) {
+                opt.textContent = `${baseName} (${unreadCount})`;
+                totalUnread += unreadCount;
+            }
+            else {
+                opt.textContent = baseName;
+            }
+        }
+    }
+    const navMsgLabel = document.getElementById('nav-msg-label');
+    if (navMsgLabel) {
+        navMsgLabel.textContent = totalUnread > 0 ? `Msg (${totalUnread})` : 'Msg';
+    }
+}
+function updateFilteredMessages() {
+    const selectedTo = toField?.value ?? '';
+    if (!selectedTo) {
+        allFilteredMessages = [];
+        return;
+    }
+    const raw = allRawMessages.filter(m => isMessageInSelectedTopic(m, selectedTo));
+    const pending = [];
+    for (const cmd of activeCommandsMap.values()) {
+        if (cmd.status === 'COMPLETED' || cmd.status === 'FAILED' || cmd.status === 'CANCELLED')
+            continue;
+        if (cmd.resultKey && allRawMessages.some(m => m.key === cmd.resultKey))
+            continue;
+        const authorLabel = knownIdentities.find(id => id.key === cmd.identityKey)?.name || 'Me';
+        const recipientLabel = knownPeers.find(p => p.key === cmd.peerKey)?.name
+            || knownIdentities.find(id => id.key === cmd.peerKey || id.peerKey === cmd.peerKey)?.name
+            || 'Recipient';
+        let type = 'binary';
+        let name = cmd.fileName || 'file';
+        if (cmd.type === 'SEND_TEXT') {
+            type = 'text';
+            name = 'text';
+        }
+        else if (cmd.type === 'CREATE_PACK') {
+            type = 'pack';
+            name = cmd.packName || 'archive.pack';
+        }
+        else if (cmd.fileName) {
+            const dotIdx = cmd.fileName.lastIndexOf('.');
+            const ext = dotIdx >= 0 ? cmd.fileName.substring(dotIdx + 1).toLowerCase() : '';
+            type = ext || 'binary';
+        }
+        const pMsg = {
+            key: `pending-${cmd.id}`,
+            author: authorLabel,
+            authorKey: cmd.identityKey,
+            recipient: recipientLabel,
+            recipientKey: cmd.peerKey,
+            fileTime: cmd.sentTimestamp,
+            created: cmd.sentTimestamp,
+            name: name,
+            type: type,
+            isPending: true,
+            pendingCommandId: cmd.id,
+            progress: cmd.progress,
+            statusMessage: cmd.statusMessage || 'Processing...'
+        };
+        if (isMessageInSelectedTopic(pMsg, selectedTo) || cmd.peerKey === selectedTo) {
+            pending.push(pMsg);
+        }
+    }
+    allFilteredMessages = [...raw, ...pending].sort((a, b) => (a.fileTime || 0) - (b.fileTime || 0));
+}
+export async function applyTopicFilter(shouldScrollToBottom = true) {
+    visibleBatchCount = PAGE_BATCH_SIZE;
+    updateFilteredMessages();
+    const startIndex = Math.max(0, allFilteredMessages.length - visibleBatchCount);
+    const visibleSlice = allFilteredMessages.slice(startIndex);
+    await ensureMetaForSlice(visibleSlice);
+    renderMessageList();
+    if (shouldScrollToBottom) {
+        scrollToBottom();
+    }
+}
+export function renderMessageList() {
+    const container = document.getElementById('messages');
+    if (!container)
+        return;
+    if (allFilteredMessages.length === 0) {
+        container.innerHTML = '';
+        currentMessages.clear();
+        let emptyEl = document.getElementById('messages-empty');
+        if (!emptyEl) {
+            emptyEl = document.createElement('div');
+            emptyEl.id = 'messages-empty';
+            emptyEl.className = 'empty-row';
+            container.appendChild(emptyEl);
+        }
+        const selectedTo = toField?.value;
+        if (!selectedTo) {
+            emptyEl.textContent = 'No topic or recipient selected.';
+        }
+        else {
+            const selectedName = toField?.selectedOptions?.[0]?.textContent || 'this topic';
+            emptyEl.textContent = `No messages in ${selectedName} yet.`;
+        }
+        return;
+    }
+    document.getElementById('messages-empty')?.remove();
+    const startIndex = Math.max(0, allFilteredMessages.length - visibleBatchCount);
+    const visibleSlice = allFilteredMessages.slice(startIndex);
+    for (const m of visibleSlice) {
+        const meta = metaCache.get(m.key);
+        if (meta)
+            hydrateMsg(m, meta);
+    }
+    const visibleElements = [];
+    for (const msg of visibleSlice) {
+        const expectedTemplateId = pickTemplateId(msg.type, msg.hasContent);
+        const isHydrated = Boolean(!msg.isPending && msg.type !== undefined && msg.type !== '');
+        let el = container.querySelector(`[data-msg-key="${CSS.escape(msg.key)}"]`);
+        if (el) {
+            const needsRebuild = el.dataset.templateId !== expectedTemplateId || (isHydrated && el.dataset.hydrated !== 'true');
+            if (needsRebuild) {
+                const newEl = createMessageElement(msg);
+                if (newEl) {
+                    el.replaceWith(newEl);
+                    el = newEl;
+                    if (isHydrated) {
+                        putCachedElement(msg.key, newEl);
+                    }
+                    else {
+                        evictCachedElement(msg.key);
+                    }
+                }
+            }
+            else {
+                fillHeader(el, msg);
+                getCachedElement(msg.key);
+            }
+        }
+        else {
+            el = getCachedElement(msg.key);
+            if (el) {
+                const needsRebuild = el.dataset.templateId !== expectedTemplateId || (isHydrated && el.dataset.hydrated !== 'true');
+                if (needsRebuild) {
+                    evictCachedElement(msg.key);
+                    el = createMessageElement(msg);
+                    if (el && isHydrated) {
+                        putCachedElement(msg.key, el);
+                    }
+                }
+                else {
+                    fillHeader(el, msg);
+                }
+            }
+            else {
+                el = createMessageElement(msg);
+                if (el && isHydrated) {
+                    putCachedElement(msg.key, el);
+                }
+            }
+        }
+        if (el) {
+            visibleElements.push(el);
+        }
+    }
+    const keepSet = new Set(visibleElements);
+    const children = Array.from(container.children);
+    for (const child of children) {
+        if (!keepSet.has(child) && child.id !== 'messages-empty') {
+            child.remove();
+            const key = child.dataset.msgKey;
+            if (key)
+                currentMessages.delete(key);
+        }
+    }
+    let refNode = null;
+    for (let i = visibleElements.length - 1; i >= 0; i--) {
+        const el = visibleElements[i];
+        if (el.parentElement !== container || el.nextElementSibling !== refNode) {
+            container.insertBefore(el, refNode);
+        }
+        refNode = el;
+    }
+    currentMessages.clear();
+    for (const msg of visibleSlice) {
+        currentMessages.add(msg.key);
+    }
+}
+function checkAndPrependHistory() {
+    const section = document.getElementById('section-messages');
+    if (!section || !section.classList.contains('is-active'))
+        return;
+    if (isPrepending)
+        return;
+    if (visibleBatchCount >= allFilteredMessages.length)
+        return;
+    if (window.scrollY < 250) {
+        isPrepending = true;
+        const prevScrollHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        const prevScrollY = window.scrollY;
+        const nextBatchCount = Math.min(allFilteredMessages.length, visibleBatchCount + PAGE_BATCH_SIZE);
+        const startIndex = Math.max(0, allFilteredMessages.length - nextBatchCount);
+        const visibleSlice = allFilteredMessages.slice(startIndex);
+        ensureMetaForSlice(visibleSlice).then(() => {
+            visibleBatchCount = nextBatchCount;
+            renderMessageList();
+            const newScrollHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+            const heightDelta = newScrollHeight - prevScrollHeight;
+            window.scrollTo(0, prevScrollY + heightDelta);
+            requestAnimationFrame(() => {
+                isPrepending = false;
+            });
+        }).catch((e) => {
+            console.warn('Failed to prepend history:', e);
+            isPrepending = false;
+        });
+    }
+}
+window.addEventListener('scroll', checkAndPrependHistory, { passive: true });
+let shouldScrollToBottomOnLoad = true;
+let shouldScrollToBottomOnSend = false;
+function isNearBottom(threshold = 150) {
+    const scrollBottom = window.scrollY + window.innerHeight;
+    const docHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    return docHeight - scrollBottom <= threshold;
+}
+export function scrollToBottom() {
+    const section = document.getElementById('section-messages');
+    if (!section || !section.classList.contains('is-active'))
+        return;
+    const doScroll = () => {
+        window.scrollTo(0, Math.max(document.documentElement.scrollHeight, document.body.scrollHeight));
+    };
+    doScroll();
+    requestAnimationFrame(() => {
+        doScroll();
+        requestAnimationFrame(doScroll);
+    });
+}
+let pendingRefreshPromise = null;
+async function refreshMessages() {
+    if (isRefreshing) {
+        if (!pendingRefreshPromise) {
+            pendingRefreshPromise = (async () => {
+                while (isRefreshing) {
+                    await new Promise(r => setTimeout(r, 25));
+                }
+                pendingRefreshPromise = null;
+                await refreshMessages();
+            })();
+        }
+        return pendingRefreshPromise;
+    }
+    isRefreshing = true;
+    try {
+        await refreshNameMaps();
+        await loadTopicLastViewed();
+        const { messages } = await graffiti.listMessages();
+        const container = document.getElementById('messages');
+        if (!container)
+            return;
+        const wasAtBottom = isNearBottom();
+        allRawMessages = messages;
+        allKnownMessageKeys.clear();
+        for (const m of messages) {
+            allKnownMessageKeys.add(m.key);
+            const cachedMeta = metaCache.get(m.key);
+            if (cachedMeta && m.hasContent !== undefined && cachedMeta.hasContent !== m.hasContent) {
+                cachedMeta.hasContent = m.hasContent;
+                evictCachedElement(m.key);
+            }
+        }
+        const currentSelected = toField?.value ?? '';
+        if (currentSelected) {
+            markTopicRead(currentSelected);
+        }
+        updateFilteredMessages();
+        const startIndex = Math.max(0, allFilteredMessages.length - visibleBatchCount);
+        const visibleSlice = allFilteredMessages.slice(startIndex);
+        await ensureMetaForSlice(visibleSlice);
+        renderMessageList();
+        updateUnreadBadges();
+        if (shouldScrollToBottomOnLoad || shouldScrollToBottomOnSend || wasAtBottom) {
+            shouldScrollToBottomOnLoad = false;
+            shouldScrollToBottomOnSend = false;
+            scrollToBottom();
+        }
+    }
+    finally {
+        isRefreshing = false;
+    }
+}
+async function reloadMessages() {
+    await refreshMessages();
+}
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function autoResizeTextarea(textarea) {
+    if (!textarea)
+        return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+}
+function setStatus(text) {
+    if (statusEl)
+        statusEl.textContent = text;
+}
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function formatTime(created) {
+    if (created == null)
+        return '';
+    const d = new Date(Number(created));
+    if (isNaN(d.getTime()))
+        return String(created);
+    const month = MONTH_NAMES[d.getMonth()];
+    const day = String(d.getDate()).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${month} ${day} ${hours}:${minutes}`;
+}
+function formatSize(bytes) {
+    if (bytes == null)
+        return '';
+    if (bytes < 1024)
+        return `${bytes} B`;
+    if (bytes < 1024 * 1024)
+        return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+// ── Media type classification ──────────────────────────────────────────────────
+const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'avif', 'gif', 'bmp', 'webp', 'svg']);
+const textExtensions = new Set(['txt', 'text', 'md', 'markdown', 'log', 'json', 'xml', 'csv']);
+const audioExtensions = new Set(['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a']);
+const videoExtensions = new Set(['mp4', 'webm', 'mkv', 'avi', 'mov']);
+const htmlExtensions = new Set(['html', 'htm']);
+const isImage = (t) => Boolean(t && imageExtensions.has(t.toLowerCase()));
+const isText = (t) => Boolean(t && textExtensions.has(t.toLowerCase()));
+const isAudio = (t) => Boolean(t && audioExtensions.has(t.toLowerCase()));
+const isVideo = (t) => Boolean(t && videoExtensions.has(t.toLowerCase()));
+const isHtml = (t) => Boolean(t && htmlExtensions.has(t.toLowerCase()));
+const packExtensions = new Set(['pack', 'epack', 'mhtml', 'mht', 'zip']);
+export const isPackFile = (name, type) => {
+    if (type && packExtensions.has(type.toLowerCase()))
+        return true;
+    if (!name)
+        return false;
+    const ext = name.split('.').pop()?.toLowerCase();
+    return Boolean(ext && packExtensions.has(ext));
+};
+function pickTemplateId(type, hasContent) {
+    if (hasContent === false)
+        return 'tpl-placeholder-message';
+    if (!type)
+        return 'tpl-binary-message';
+    if (isText(type))
+        return 'tpl-text-message';
+    if (isImage(type))
+        return 'tpl-image-message';
+    if (isAudio(type))
+        return 'tpl-audio-message';
+    if (isVideo(type))
+        return 'tpl-video-message';
+    return 'tpl-binary-message';
+}
+function fillHeader(item, msg) {
+    const authorAvatar = item.querySelector('.msg-author-avatar');
+    const authorName = item.querySelector('.msg-author-name');
+    const recipientAvatar = item.querySelector('.msg-recipient-avatar');
+    const recipientName = item.querySelector('.msg-recipient-name');
+    const timeEl = item.querySelector('.msg-time');
+    const authorLabel = msg.author || 'Unknown';
+    const recipientLabel = msg.recipient || 'Unknown';
+    if (authorName)
+        authorName.textContent = authorLabel;
+    if (recipientName)
+        recipientName.textContent = recipientLabel;
+    const authorKey = msg.authorKey || nameToKey.get(authorLabel);
+    const recipientKey = msg.recipientKey || nameToKey.get(recipientLabel);
+    if (authorAvatar) {
+        if (authorKey) {
+            authorAvatar.src = graffiti.avatarUrl(authorKey);
+            authorAvatar.alt = authorLabel;
+        }
+        else {
+            authorAvatar.hidden = true;
+        }
+    }
+    if (recipientAvatar) {
+        if (recipientKey) {
+            recipientAvatar.src = graffiti.avatarUrl(recipientKey);
+            recipientAvatar.alt = recipientLabel;
+        }
+        else {
+            recipientAvatar.hidden = true;
+        }
+    }
+    if (timeEl) {
+        const displayTime = typeof msg.fileTime === 'number' && msg.fileTime > 0
+            ? msg.fileTime
+            : (msg.created ? Number(msg.created) : Date.now());
+        timeEl.textContent = formatTime(displayTime);
+        const iso = new Date(displayTime).toISOString();
+        if (iso !== 'Invalid Date') {
+            timeEl.dateTime = iso;
+            timeEl.title = new Date(displayTime).toLocaleString();
+        }
+    }
+    if (msg.ignored) {
+        if (!item.querySelector('.msg-ignored-badge')) {
+            const badge = document.createElement('span');
+            badge.className = 'badge-session msg-ignored-badge';
+            badge.style.background = '#444';
+            badge.style.color = '#bbb';
+            badge.style.marginLeft = '4px';
+            badge.style.fontSize = '0.75rem';
+            badge.textContent = 'Ignored';
+            badge.title = 'Ignored for relays';
+            const header = item.querySelector('.message-header');
+            if (header && timeEl) {
+                header.insertBefore(badge, timeEl);
+            }
+            else if (header) {
+                header.appendChild(badge);
+            }
+        }
+    }
+    else {
+        item.querySelector('.msg-ignored-badge')?.remove();
+    }
+}
+// ── Message context menu & Quote ──────────────────────────────────────────────
+let activeContextMsg = null;
+function openContextMenu(x, y, msg) {
+    if (!msgContextMenu || msg.isPending)
+        return;
+    activeContextMsg = msg;
+    const copyBtn = msgContextMenu.querySelector('[data-action="copy"]');
+    if (copyBtn) {
+        copyBtn.hidden = !isText(msg.type);
+    }
+    const ignoreBtn = msgContextMenu.querySelector('[data-action="toggle-ignore"]');
+    if (ignoreBtn) {
+        const isIgnored = Boolean(msg.ignored);
+        const icon = ignoreBtn.querySelector('.material-symbols-outlined');
+        const label = ignoreBtn.querySelector('.ignore-label') || ignoreBtn.querySelector('span:not(.material-symbols-outlined)');
+        if (icon)
+            icon.textContent = isIgnored ? 'visibility' : 'visibility_off';
+        if (label)
+            label.textContent = isIgnored ? 'Watch' : 'Ignore';
+    }
+    msgContextMenu.hidden = false;
+    // Collision-aware viewport positioning
+    const padding = 8;
+    const menuWidth = msgContextMenu.offsetWidth || 140;
+    const menuHeight = msgContextMenu.offsetHeight || 120;
+    let left = x;
+    let top = y;
+    if (left + menuWidth > window.innerWidth - padding) {
+        left = Math.max(padding, window.innerWidth - menuWidth - padding);
+    }
+    if (top + menuHeight > window.innerHeight - padding) {
+        top = Math.max(padding, window.innerHeight - menuHeight - padding);
+    }
+    msgContextMenu.style.left = `${left}px`;
+    msgContextMenu.style.top = `${top}px`;
+}
+function closeContextMenu() {
+    if (msgContextMenu && !msgContextMenu.hidden) {
+        msgContextMenu.hidden = true;
+        activeContextMsg = null;
+    }
+}
+async function handleCopy(msg) {
+    let text = '';
+    const cached = textContentCache.get(msg.key);
+    if (cached !== undefined) {
+        text = cached;
+    }
+    else {
+        try {
+            const url = graffiti.contentUrl(msg.key);
+            const res = await fetch(url);
+            text = await res.text();
+            textContentCache.set(msg.key, text);
+        }
+        catch (err) {
+            setStatus(`Failed to load text for copying: ${err?.message || err}`);
+            return;
+        }
+    }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+        }
+        else {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        setStatus('Message copied to clipboard.');
+    }
+    catch (err) {
+        setStatus(`Copy failed: ${err?.message || err}`);
+    }
+}
+async function handleMessageInfo(msg) {
+    await showDialog({
+        title: 'Content Info',
+        templateId: 'tpl-message-info',
+        confirmLabel: 'Close',
+        init(body) {
+            const cancelBtn = body.closest('dialog')?.querySelector('.app-dialog-cancel');
+            if (cancelBtn) {
+                cancelBtn.style.display = 'none';
+            }
+            const nameEl = body.querySelector('#msg-info-name');
+            const sizeEl = body.querySelector('#msg-info-size');
+            const typeEl = body.querySelector('#msg-info-type');
+            const authorEl = body.querySelector('#msg-info-author');
+            const recipientEl = body.querySelector('#msg-info-recipient');
+            const fileTimeEl = body.querySelector('#msg-info-filetime');
+            const keyEl = body.querySelector('#msg-info-key');
+            if (nameEl)
+                nameEl.textContent = msg.name || 'Untitled';
+            if (sizeEl)
+                sizeEl.textContent = typeof msg.size === 'number' ? `${formatSize(msg.size)} (${msg.size.toLocaleString()} bytes)` : '—';
+            if (typeEl)
+                typeEl.textContent = msg.type || 'unknown';
+            if (authorEl)
+                authorEl.textContent = msg.authorKey ? `${msg.author || 'Unknown'} (${msg.authorKey})` : (msg.author || 'Unknown');
+            if (recipientEl)
+                recipientEl.textContent = msg.recipientKey ? `${msg.recipient || 'Unknown'} (${msg.recipientKey})` : (msg.recipient || 'Unknown');
+            const fileTime = typeof msg.fileTime === 'number' && msg.fileTime > 0 ? msg.fileTime : null;
+            if (fileTimeEl) {
+                fileTimeEl.textContent = fileTime ? new Date(fileTime).toLocaleString() : '—';
+            }
+            if (keyEl)
+                keyEl.textContent = msg.key;
+        }
+    });
+}
+async function handleForward(msg) {
+    const fromKey = fromField?.value;
+    if (!fromKey) {
+        setStatus('Select a sender identity first');
+        alert('Please select a sender identity first.');
+        return;
+    }
+    const msgRecipientKey = msg.recipientKey || (msg.recipient ? nameToKey.get(msg.recipient) : '');
+    const data = await showDialog({
+        title: 'Forward Message',
+        templateId: 'tpl-message-forward',
+        confirmLabel: 'Forward',
+        init: (body) => {
+            const select = body.querySelector('#dlg-forward-to');
+            if (!select)
+                return;
+            select.replaceChildren();
+            const seenKeys = new Set();
+            const optGroupIdentities = document.createElement('optgroup');
+            optGroupIdentities.label = 'Topic Identities';
+            let idCount = 0;
+            for (const id of knownIdentities) {
+                if (id.peerKey !== msgRecipientKey && id.key !== msgRecipientKey && !seenKeys.has(id.peerKey)) {
+                    seenKeys.add(id.peerKey);
+                    const opt = document.createElement('option');
+                    opt.value = id.peerKey;
+                    opt.textContent = `🏷️ ${id.name}`;
+                    opt.title = 'Topic Identity (Shared forum)';
+                    optGroupIdentities.append(opt);
+                    idCount++;
+                }
+            }
+            if (idCount > 0)
+                select.append(optGroupIdentities);
+            const optGroupPeers = document.createElement('optgroup');
+            optGroupPeers.label = 'Peers';
+            let peerCount = 0;
+            for (const peer of knownPeers) {
+                if (peer.key !== msgRecipientKey && !seenKeys.has(peer.key)) {
+                    seenKeys.add(peer.key);
+                    const opt = document.createElement('option');
+                    opt.value = peer.key;
+                    opt.textContent = `👤 ${peer.name}`;
+                    opt.title = 'Peer (Direct message to friend)';
+                    optGroupPeers.append(opt);
+                    peerCount++;
+                }
+            }
+            if (peerCount > 0)
+                select.append(optGroupPeers);
+        }
+    });
+    if (!data || !data.targetPeer)
+        return;
+    const destKey = data.targetPeer;
+    setStatus('Forwarding message…');
+    try {
+        await graffiti.forwardMessage(msg.key, fromKey, destKey);
+        setStatus('Message forwarded.');
+        if (toField) {
+            const prevKey = activeToKey;
+            if (prevKey && prevKey !== destKey) {
+                markTopicRead(prevKey);
+            }
+            toField.value = destKey;
+            activeToKey = destKey;
+            markTopicRead(destKey);
+            updateSameAuthorRecipientWarning();
+            void saveOrClearRememberedFields();
+            applyTopicFilter(true);
+            updateUnreadBadges();
+        }
+        queueRefreshMessages();
+    }
+    catch (err) {
+        setStatus(`Forward failed: ${err?.message || err}`);
+    }
+}
+function handleDownload(msg) {
+    const url = graffiti.contentUrl(msg.key);
+    const filename = msg.name || (isText(msg.type) ? 'message.txt' : `content-${msg.key.slice(0, 8)}.${msg.type || 'bin'}`);
+    if (window.Android && window.Android.download) {
+        const fullUrl = new URL(url, window.location.origin).toString();
+        window.Android.download(fullUrl, filename);
+        return;
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+async function handleQuote(msg) {
+    let contentToQuote = '';
+    if (isText(msg.type)) {
+        const cached = textContentCache.get(msg.key);
+        if (cached !== undefined) {
+            contentToQuote = cached;
+        }
+        else {
+            try {
+                const url = graffiti.contentUrl(msg.key);
+                const res = await fetch(url);
+                contentToQuote = await res.text();
+                textContentCache.set(msg.key, contentToQuote);
+            }
+            catch {
+                contentToQuote = '';
+            }
+        }
+    }
+    const authorName = msg.author || 'Unknown';
+    let quoteBlock = '';
+    if (isText(msg.type)) {
+        const lines = contentToQuote ? contentToQuote.split('\n') : [''];
+        const quoteLines = [
+            `> **${authorName} wrote:**`,
+            ...lines.map(line => `> ${line}`)
+        ];
+        quoteBlock = quoteLines.join('\n') + '\n\n';
+    }
+    else {
+        const fileName = msg.name || `${msg.type} attachment`;
+        quoteBlock = `> **${authorName} wrote:** [${fileName}]\n\n`;
+    }
+    // Note: 'to' destination in toField is left unchanged as whatever it was.
+    if (messageText) {
+        if (messageText.value && messageText.value.trim().length > 0) {
+            messageText.value = messageText.value.trimEnd() + '\n\n' + quoteBlock;
+        }
+        else {
+            messageText.value = quoteBlock;
+        }
+        autoResizeTextarea(messageText);
+        updateComposerHeight();
+        const wasAtBottom = isNearBottom();
+        if (wasAtBottom) {
+            scrollToBottom();
+        }
+        messageText.focus();
+        messageText.setSelectionRange(messageText.value.length, messageText.value.length);
+    }
+}
+const handleReply = handleQuote;
+function createMessageElement(msg) {
+    const url = graffiti.contentUrl(msg.key);
+    const tplId = pickTemplateId(msg.type, msg.hasContent);
+    const tpl = document.getElementById(tplId);
+    if (!tpl)
+        return null;
+    const item = tpl.content.cloneNode(true);
+    const el = item.firstElementChild;
+    el.dataset.msgKey = msg.key;
+    el.dataset.templateId = tplId;
+    el.dataset.msgType = msg.type || '';
+    el.dataset.hydrated = (!msg.isPending && msg.type !== undefined && msg.type !== '') ? 'true' : 'false';
+    fillHeader(el, msg);
+    if (msg.isPending) {
+        el.classList.add('msg-pending');
+        el.style.opacity = '0.8';
+        const body = el.querySelector('.message-body');
+        if (body) {
+            body.innerHTML = '';
+            const box = document.createElement('div');
+            box.className = 'msg-pending-box';
+            box.style.display = 'flex';
+            box.style.flexDirection = 'column';
+            box.style.gap = '0.35rem';
+            box.style.padding = '0.35rem 0.5rem';
+            box.style.borderRadius = '4px';
+            box.style.background = 'rgba(0,0,0,0.12)';
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.justifyContent = 'space-between';
+            row.style.gap = '0.5rem';
+            row.style.fontSize = '0.88rem';
+            const left = document.createElement('span');
+            left.style.fontWeight = '600';
+            left.style.display = 'inline-flex';
+            left.style.alignItems = 'center';
+            left.style.gap = '0.4rem';
+            left.style.overflow = 'hidden';
+            left.style.textOverflow = 'ellipsis';
+            left.style.whiteSpace = 'nowrap';
+            const dot = document.createElement('span');
+            dot.className = 'nav-indicator-dot is-active';
+            dot.style.width = '8px';
+            dot.style.height = '8px';
+            dot.style.display = 'inline-block';
+            dot.style.flexShrink = '0';
+            const titleSpan = document.createElement('span');
+            titleSpan.textContent = msg.name || 'Sending...';
+            left.append(dot, titleSpan);
+            const right = document.createElement('div');
+            right.style.display = 'flex';
+            right.style.alignItems = 'center';
+            right.style.gap = '0.5rem';
+            const statusSpan = document.createElement('span');
+            statusSpan.className = 'pending-status-text';
+            statusSpan.style.fontSize = '0.8rem';
+            statusSpan.style.opacity = '0.8';
+            statusSpan.style.flexShrink = '0';
+            statusSpan.textContent = msg.statusMessage || `${msg.progress || 0}%`;
+            right.append(statusSpan);
+            if (msg.pendingCommandId) {
+                const cancelBtn = document.createElement('button');
+                cancelBtn.type = 'button';
+                cancelBtn.textContent = '✕';
+                cancelBtn.title = 'Cancel sending';
+                cancelBtn.style.padding = '0.1rem 0.35rem';
+                cancelBtn.style.fontSize = '0.75rem';
+                cancelBtn.style.background = 'transparent';
+                cancelBtn.style.border = 'none';
+                cancelBtn.style.cursor = 'pointer';
+                cancelBtn.style.opacity = '0.6';
+                const cmdId = msg.pendingCommandId;
+                cancelBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    cancelBtn.disabled = true;
+                    await graffiti.cancelCommand(cmdId);
+                });
+                right.append(cancelBtn);
+            }
+            row.append(left, right);
+            const track = document.createElement('div');
+            track.style.width = '100%';
+            track.style.height = '4px';
+            track.style.background = 'rgba(128,128,128,0.25)';
+            track.style.borderRadius = '2px';
+            track.style.overflow = 'hidden';
+            const fill = document.createElement('div');
+            fill.className = 'pending-progress-bar';
+            fill.style.width = `${Math.max(5, msg.progress || 5)}%`;
+            fill.style.height = '100%';
+            fill.style.background = 'var(--accent, #4caf50)';
+            fill.style.transition = 'width 0.25s ease';
+            track.append(fill);
+            box.append(row, track);
+            body.append(box);
+        }
+        return el;
+    }
+    if (msg.hasContent === false) {
+        const fileNameEl = el.querySelector('.placeholder-file-name');
+        const fileSizeEl = el.querySelector('.placeholder-file-size');
+        const downloadBtn = el.querySelector('.btn-download-content');
+        const progressContainer = el.querySelector('.placeholder-progress-container');
+        const progressText = el.querySelector('.placeholder-progress-text');
+        if (fileNameEl)
+            fileNameEl.textContent = msg.name || 'Large File';
+        if (fileSizeEl)
+            fileSizeEl.textContent = msg.size ? formatSize(msg.size) : '';
+        if (downloadBtn) {
+            downloadBtn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                downloadBtn.disabled = true;
+                downloadBtn.textContent = 'Requesting...';
+                if (progressContainer)
+                    progressContainer.style.display = 'block';
+                if (progressText) {
+                    progressText.textContent = 'Requesting download from peer...';
+                    progressText.style.color = '';
+                }
+                try {
+                    await graffiti.downloadMessageContent(msg.key);
+                }
+                catch (err) {
+                    if (progressText) {
+                        progressText.textContent = `Download failed: ${err.message}`;
+                        progressText.style.color = '#ef4444';
+                    }
+                    downloadBtn.disabled = false;
+                    downloadBtn.textContent = '⬇ Download';
+                }
+            };
+        }
+    }
+    else if (isText(msg.type)) {
+        const pre = el.querySelector('.msg-text-content');
+        if (pre) {
+            const renderText = (t) => {
+                const isTruncated = (msg.size && msg.size > 1024 + 100) || t.length > (1024 + 100);
+                if (isTruncated) {
+                    pre.innerHTML = renderMarkdown(t.slice(0, 1024) + '…');
+                    let viewBtn = el.querySelector('.btn-view-text');
+                    if (!viewBtn) {
+                        viewBtn = document.createElement('button');
+                        viewBtn.type = 'button';
+                        viewBtn.className = 'btn-view-text';
+                        viewBtn.style.display = 'inline-flex';
+                        viewBtn.style.alignItems = 'center';
+                        viewBtn.style.gap = '0.25rem';
+                        viewBtn.style.marginTop = '0.5rem';
+                        viewBtn.style.fontSize = '0.85rem';
+                        pre.after(viewBtn);
+                    }
+                    const sizeStr = msg.size ? ` (${formatSize(msg.size)})` : '';
+                    viewBtn.textContent = `▶ View Entire Content${sizeStr}`;
+                    viewBtn.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openFullContentViewer(msg, t);
+                    };
+                }
+                else {
+                    pre.innerHTML = renderMarkdown(t);
+                    const existingBtn = el.querySelector('.btn-view-text');
+                    if (existingBtn)
+                        existingBtn.remove();
+                }
+            };
+            const cached = textContentCache.get(msg.key);
+            if (cached !== undefined) {
+                renderText(cached);
+            }
+            else {
+                fetch(url)
+                    .then(r => r.text())
+                    .then(t => {
+                    textContentCache.set(msg.key, t);
+                    renderText(t);
+                })
+                    .catch((err) => {
+                    pre.textContent = `[Error loading content: ${err.message}]`;
+                });
+            }
+        }
+    }
+    else if (isImage(msg.type)) {
+        const imgEl = el.querySelector('.msg-media');
+        if (imgEl) {
+            imgEl.src = url;
+            imgEl.alt = msg.name || 'Image';
+            imgEl.classList.add('is-clickable');
+            imgEl.title = 'Click to open in dedicated viewer';
+            imgEl.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openFullContentViewer(msg);
+            });
+        }
+    }
+    else if (isAudio(msg.type)) {
+        const fileNameEl = el.querySelector('.msg-file-name');
+        if (fileNameEl)
+            fileNameEl.textContent = msg.name || '';
+        const audio = el.querySelector('.msg-media');
+        let playerHandle = null;
+        if (audio) {
+            audio.preload = 'none';
+            if (audio.src !== url)
+                audio.src = url;
+            playerHandle = attachCustomAudioPlayer(audio);
+        }
+        let viewBtn = el.querySelector('.btn-view-media');
+        if (!viewBtn) {
+            viewBtn = document.createElement('button');
+            viewBtn.type = 'button';
+            viewBtn.className = 'btn-view-media';
+            viewBtn.style.display = 'inline-flex';
+            viewBtn.style.alignItems = 'center';
+            viewBtn.style.gap = '0.25rem';
+            viewBtn.style.marginTop = '0.4rem';
+            viewBtn.style.fontSize = '0.82rem';
+            viewBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size: 1rem;">visibility</span> Full Viewer';
+            viewBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openFullContentViewer(msg);
+            };
+            const targetEl = playerHandle?.playerElement || audio;
+            targetEl?.after(viewBtn);
+        }
+    }
+    else if (isVideo(msg.type)) {
+        const fileNameEl = el.querySelector('.msg-file-name');
+        if (fileNameEl)
+            fileNameEl.textContent = msg.name || '';
+        const video = el.querySelector('.msg-media');
+        if (video) {
+            video.preload = 'metadata';
+            const videoUrl = `${url}#t=0.001`;
+            if (video.src !== videoUrl)
+                video.src = videoUrl;
+        }
+        let viewBtn = el.querySelector('.btn-view-media');
+        if (!viewBtn) {
+            viewBtn = document.createElement('button');
+            viewBtn.type = 'button';
+            viewBtn.className = 'btn-view-media';
+            viewBtn.style.display = 'inline-flex';
+            viewBtn.style.alignItems = 'center';
+            viewBtn.style.gap = '0.25rem';
+            viewBtn.style.marginTop = '0.4rem';
+            viewBtn.style.fontSize = '0.82rem';
+            viewBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size: 1rem;">visibility</span> Full Viewer';
+            viewBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openFullContentViewer(msg);
+            };
+            video?.after(viewBtn);
+        }
+    }
+    else {
+        const fileNameEl = el.querySelector('.msg-file-name');
+        if (fileNameEl)
+            fileNameEl.textContent = msg.name || (msg.type ? 'File' : 'Loading...');
+        const link = el.querySelector('.msg-download-link');
+        if (link) {
+            link.href = url;
+            link.download = msg.name || 'download';
+            const sizeStr = msg.size ? ` (${formatSize(msg.size)})` : '';
+            link.textContent = msg.name ? `⬇ Download ${msg.name}${sizeStr}` : (msg.type ? `⬇ Download file${sizeStr}` : 'Loading message...');
+        }
+        const isPack = isPackFile(msg.name, msg.type);
+        const isHtmlFile = !isPack && (isHtml(msg.type) || (msg.name && (msg.name.toLowerCase().endsWith('.html') || msg.name.toLowerCase().endsWith('.htm'))));
+        let viewBtn = el.querySelector('.btn-view-media');
+        if (!viewBtn && (isPack || isHtmlFile)) {
+            viewBtn = document.createElement('button');
+            viewBtn.type = 'button';
+            viewBtn.className = 'btn-view-media';
+            viewBtn.style.marginLeft = '8px';
+            viewBtn.style.display = 'inline-flex';
+            viewBtn.style.alignItems = 'center';
+            viewBtn.style.gap = '0.25rem';
+            viewBtn.innerHTML = isPack
+                ? '<span class="material-symbols-outlined" style="font-size: 1rem;">open_in_new</span> Launch'
+                : '<span class="material-symbols-outlined" style="font-size: 1rem;">visibility</span> View';
+            viewBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (isPack) {
+                    void openPackFile({ encKey: msg.key, name: msg.name });
+                }
+                else {
+                    openFullContentViewer(msg);
+                }
+            };
+            link?.parentElement?.appendChild(viewBtn);
+        }
+    }
+    return el;
+}
+function displayMessage(msg) {
+    allRawMessages.push(msg);
+    allKnownMessageKeys.add(msg.key);
+    allFilteredMessages.push(msg);
+    visibleBatchCount++;
+    void ensureMetaForSlice([msg]).then(() => {
+        renderMessageList();
+    });
+}
+async function populateSelects() {
+    const [{ identities }, { peers }, node] = await Promise.all([
+        graffiti.listIdentities(),
+        graffiti.listPeers(),
+        graffiti.nodeInfo(),
+    ]);
+    knownIdentities = identities;
+    knownPeers = peers;
+    nameToKey.clear();
+    for (const id of identities) {
+        nameToKey.set(id.name, id.key);
+    }
+    for (const peer of peers) {
+        nameToKey.set(peer.name, peer.key);
+    }
+    const prevFrom = fromField?.value ?? '';
+    const prevTo = toField?.value ?? '';
+    const [savedFromKey, savedToKey] = await Promise.all([
+        graffiti.getStore('graffiti:last-from-key'),
+        graffiti.getStore('graffiti:last-to-key'),
+        loadTopicLastViewed(),
+    ]);
+    // Populate From: all available identities
+    const fromEmptyMsg = document.getElementById('from-empty-message');
+    if (fromField) {
+        fromField.replaceChildren();
+        if (identities.length === 0) {
+            fromField.style.display = 'none';
+            if (fromEmptyMsg)
+                fromEmptyMsg.style.display = '';
+        }
+        else {
+            fromField.style.display = '';
+            if (fromEmptyMsg)
+                fromEmptyMsg.style.display = 'none';
+            for (const id of identities) {
+                const opt = document.createElement('option');
+                opt.value = id.key;
+                opt.textContent = id.name;
+                fromField.append(opt);
+            }
+            if (prevFrom && identities.some(id => id.key === prevFrom)) {
+                fromField.value = prevFrom;
+            }
+            else if (savedFromKey && isSavedIdentity(savedFromKey, identities)) {
+                fromField.value = savedFromKey;
+            }
+            else if (identities.some(id => id.key === node.peerKey)) {
+                fromField.value = node.peerKey;
+            }
+        }
+    }
+    // Populate To: all available peers + identities
+    const toEmptyMsg = document.getElementById('to-empty-message');
+    if (toField) {
+        toField.replaceChildren();
+        const seenKeys = new Set();
+        const optGroupTopics = document.createElement('optgroup');
+        optGroupTopics.label = 'Topic Identities';
+        for (const id of identities) {
+            if (!seenKeys.has(id.peerKey)) {
+                seenKeys.add(id.peerKey);
+                const opt = document.createElement('option');
+                opt.value = id.peerKey; // PeerKey, not IdentityKey
+                const baseText = `🏷️ ${id.name}`;
+                opt.dataset.baseName = baseText;
+                opt.textContent = baseText;
+                opt.title = 'Topic Identity (Shared topic/forum)';
+                optGroupTopics.append(opt);
+            }
+        }
+        if (optGroupTopics.children.length > 0) {
+            toField.append(optGroupTopics);
+        }
+        const optGroupPeers = document.createElement('optgroup');
+        optGroupPeers.label = 'Peers';
+        for (const peer of peers) {
+            if (!seenKeys.has(peer.key)) {
+                seenKeys.add(peer.key);
+                const opt = document.createElement('option');
+                opt.value = peer.key;
+                const baseText = `👤 ${peer.name}`;
+                opt.dataset.baseName = baseText;
+                opt.textContent = baseText;
+                opt.title = 'Peer (Direct message to friend)';
+                optGroupPeers.append(opt);
+            }
+        }
+        if (optGroupPeers.children.length > 0) {
+            toField.append(optGroupPeers);
+        }
+        if (seenKeys.size === 0) {
+            toField.style.display = 'none';
+            if (toEmptyMsg) {
+                toEmptyMsg.textContent = 'No peers or identities available';
+                toEmptyMsg.style.display = '';
+            }
+        }
+        else {
+            toField.style.display = '';
+            if (toEmptyMsg)
+                toEmptyMsg.style.display = 'none';
+            if (prevTo && seenKeys.has(prevTo)) {
+                toField.value = prevTo;
+            }
+            else if (savedToKey && seenKeys.has(savedToKey) && isSavedRecipient(savedToKey, identities, peers)) {
+                toField.value = savedToKey;
+            }
+        }
+    }
+    activeToKey = toField?.value ?? '';
+    if (activeToKey) {
+        markTopicRead(activeToKey);
+    }
+    updateSameAuthorRecipientWarning();
+    void saveOrClearRememberedFields();
+    applyTopicFilter(false);
+    updateUnreadBadges();
+}
+function getEnvelope() {
+    return {
+        identityKey: fromField?.value ?? '',
+        peerKey: toField?.value ?? '',
+    };
+}
+async function sendPayload(payload) {
+    const { identityKey, peerKey } = payload;
+    if (!identityKey || !peerKey) {
+        setStatus('Select a sender and recipient first.');
+        return;
+    }
+    setStatus(`Sending ${payload.type}...`);
+    try {
+        if (payload.type === 'text') {
+            await graffiti.sendText(identityKey, peerKey, payload.text);
+            setStatus('Text sent.');
+            shouldScrollToBottomOnSend = true;
+            await refreshMessages();
+            scrollToBottom();
+        }
+        else {
+            const uploadId = 'upload-' + Date.now();
+            const startTs = Date.now();
+            handleCommandUpdate({
+                id: uploadId,
+                type: 'SEND_FILE',
+                identityKey,
+                peerKey,
+                sentTimestamp: startTs,
+                status: 'PROCESSING',
+                progress: 5,
+                fileName: payload.fileName,
+                statusMessage: `Uploading ${payload.fileName} (0%)...`,
+                createdAt: startTs
+            });
+            setStatus(`Uploading ${payload.fileName}...`);
+            const res = await graffiti.sendFile(identityKey, peerKey, payload.file, true, (percent, loaded, total) => {
+                const pct = Math.min(100, Math.max(5, percent));
+                handleCommandUpdate({
+                    id: uploadId,
+                    type: 'SEND_FILE',
+                    identityKey,
+                    peerKey,
+                    sentTimestamp: startTs,
+                    status: 'PROCESSING',
+                    progress: pct,
+                    fileName: payload.fileName,
+                    statusMessage: `Uploading ${payload.fileName} (${percent}% - ${formatSize(loaded)} / ${formatSize(total)})...`,
+                    createdAt: startTs
+                });
+            });
+            if (res.commandId) {
+                const ts = res.sentTimestamp || Date.now();
+                evictCachedElement(`pending-${uploadId}`);
+                activeCommandsMap.delete(uploadId);
+                handleCommandUpdate({
+                    id: res.commandId,
+                    type: 'SEND_FILE',
+                    identityKey,
+                    peerKey,
+                    sentTimestamp: ts,
+                    status: 'PROCESSING',
+                    progress: 5,
+                    fileName: payload.fileName,
+                    statusMessage: `Encrypting ${payload.fileName} (0%)...`,
+                    createdAt: ts
+                });
+                setStatus(`Encrypting ${payload.fileName}...`);
+            }
+            else {
+                evictCachedElement(`pending-${uploadId}`);
+                activeCommandsMap.delete(uploadId);
+                setStatus(`File sent: ${payload.fileName}`);
+            }
+            shouldScrollToBottomOnSend = true;
+            await refreshMessages();
+            scrollToBottom();
+        }
+    }
+    catch (err) {
+        setStatus(`Failed: ${err.message}`);
+    }
+}
+function firstDroppedContent(dataTransfer) {
+    if (!dataTransfer)
+        return null;
+    if (dataTransfer.files?.length > 0)
+        return { kind: 'file', value: dataTransfer.files[0] };
+    const plain = dataTransfer.getData('text/plain');
+    if (plain)
+        return { kind: 'text', value: plain };
+    const html = dataTransfer.getData('text/html');
+    if (html)
+        return { kind: 'html', value: html };
+    return null;
+}
+// ── Form events ───────────────────────────────────────────────────────────────
+form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const text = (messageText?.value ?? '').trim();
+    if (!text) {
+        setStatus('Type a message before sending.');
+        return;
+    }
+    if (messageText) {
+        messageText.value = '';
+        autoResizeTextarea(messageText);
+    }
+    await sendPayload({ type: 'text', text, ...getEnvelope() });
+    scrollToBottom();
+});
+messageText?.addEventListener('input', () => autoResizeTextarea(messageText));
+messageText?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        form?.requestSubmit();
+    }
+});
+sendFileButton?.addEventListener('click', () => fileInput?.click());
+function updateSameAuthorRecipientWarning() {
+    const warningEl = document.getElementById('same-author-recipient-warning');
+    if (!warningEl)
+        return;
+    const fromKey = fromField?.value;
+    const toKey = toField?.value;
+    if (!fromKey || !toKey) {
+        warningEl.style.display = 'none';
+        return;
+    }
+    const selectedIdentity = knownIdentities.find(id => id.key === fromKey);
+    if (selectedIdentity && selectedIdentity.peerKey === toKey) {
+        warningEl.style.display = 'block';
+    }
+    else {
+        warningEl.style.display = 'none';
+    }
+}
+fromField?.addEventListener('change', () => {
+    updateSameAuthorRecipientWarning();
+    void saveOrClearRememberedFields();
+});
+toField?.addEventListener('change', () => {
+    const prevKey = activeToKey;
+    const newKey = toField?.value ?? '';
+    if (prevKey && prevKey !== newKey) {
+        markTopicRead(prevKey);
+    }
+    activeToKey = newKey;
+    if (newKey) {
+        markTopicRead(newKey);
+    }
+    updateSameAuthorRecipientWarning();
+    void saveOrClearRememberedFields();
+    applyTopicFilter(true);
+    updateUnreadBadges();
+});
+async function extractDroppedEntries(dataTransfer) {
+    const items = [];
+    const dtItems = dataTransfer.items;
+    let isFolder = false;
+    let folderName;
+    if (dtItems && dtItems.length > 0 && typeof dtItems[0].webkitGetAsEntry === 'function') {
+        const entryPromises = [];
+        for (let i = 0; i < dtItems.length; i++) {
+            const entry = dtItems[i].webkitGetAsEntry();
+            if (!entry)
+                continue;
+            if (entry.isDirectory) {
+                isFolder = true;
+                if (!folderName)
+                    folderName = entry.name;
+            }
+            async function traverse(ent, currentPath) {
+                if (ent.isFile) {
+                    const file = await new Promise((resolve, reject) => ent.file(resolve, reject));
+                    const relPath = currentPath ? `${currentPath}/${file.name}` : file.name;
+                    items.push({ file, path: relPath });
+                }
+                else if (ent.isDirectory) {
+                    const reader = ent.createReader();
+                    const readAll = async () => {
+                        const all = [];
+                        while (true) {
+                            const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+                            if (!batch || batch.length === 0)
+                                break;
+                            all.push(...batch);
+                        }
+                        return all;
+                    };
+                    const nextDir = currentPath ? `${currentPath}/${ent.name}` : ent.name;
+                    const children = await readAll();
+                    for (const child of children) {
+                        await traverse(child, nextDir);
+                    }
+                }
+            }
+            if (entry.isDirectory && dtItems.length === 1) {
+                const reader = entry.createReader();
+                const readAll = async () => {
+                    const all = [];
+                    while (true) {
+                        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+                        if (!batch || batch.length === 0)
+                            break;
+                        all.push(...batch);
+                    }
+                    return all;
+                };
+                entryPromises.push((async () => {
+                    const children = await readAll();
+                    for (const child of children) {
+                        await traverse(child, "");
+                    }
+                })());
+            }
+            else {
+                entryPromises.push(traverse(entry, ""));
+            }
+        }
+        await Promise.all(entryPromises);
+    }
+    if (items.length === 0 && dataTransfer.files && dataTransfer.files.length > 0) {
+        for (let i = 0; i < dataTransfer.files.length; i++) {
+            const file = dataTransfer.files[i];
+            items.push({ file, path: file.name });
+        }
+    }
+    return { items, defaultName: folderName, isFolder };
+}
+async function sendPackPipeline(fileList, packName, envelope) {
+    if (!envelope.identityKey || !envelope.peerKey) {
+        setStatus('Select a sender and recipient first.');
+        return;
+    }
+    if (fileList.length === 0) {
+        setStatus('No files to package.');
+        return;
+    }
+    setStatus(`Preparing pack: ${packName}...`);
+    const progress = showProgressModal('Creating Pack Archive', `Uploading files for ${packName}...`);
+    let sessionId = null;
+    try {
+        progress.update(`Starting pack session: ${packName}...`, 0);
+        const beginRes = await graffiti.createPackBegin(envelope.identityKey, envelope.peerKey, packName);
+        sessionId = beginRes.sessionId;
+        const total = fileList.length;
+        for (let i = 0; i < total; i++) {
+            const item = fileList[i];
+            const pct = Math.round((i / total) * 100);
+            progress.update(`Uploading file ${i + 1} of ${total} (${pct}%)`, pct, item.path);
+            setStatus(`Staging pack: ${i + 1}/${total} files...`);
+            await graffiti.uploadPackFile(sessionId, item.path, item.file);
+        }
+        progress.update('Queued for background compilation and encryption!', 100);
+        setStatus(`Pack queued for background processing: ${packName}`);
+        const res = await graffiti.createPackFinish(sessionId, true);
+        if (res.commandId) {
+            const ts = res.sentTimestamp || Date.now();
+            handleCommandUpdate({
+                id: res.commandId,
+                type: 'CREATE_PACK',
+                identityKey: envelope.identityKey,
+                peerKey: envelope.peerKey,
+                sentTimestamp: ts,
+                status: 'QUEUED',
+                progress: 10,
+                packName: packName,
+                statusMessage: 'Queued on server...',
+                createdAt: ts
+            });
+            setStatus(`Pack queued: ${packName}`);
+        }
+        shouldScrollToBottomOnSend = true;
+        await refreshMessages();
+        scrollToBottom();
+    }
+    catch (err) {
+        const errMsg = err.message || 'Unknown error';
+        setStatus(`Failed: ${errMsg}`);
+        if (sessionId) {
+            void graffiti.createPackCancel(sessionId).catch(() => { });
+        }
+        alert(`Pack creation error: ${errMsg}`);
+    }
+    finally {
+        progress.close();
+    }
+}
+async function promptPackNameAndSend(fileList, defaultName) {
+    const envelope = getEnvelope();
+    if (!envelope.identityKey || !envelope.peerKey) {
+        setStatus('Select a sender and recipient first.');
+        return;
+    }
+    const initialName = defaultName.toLowerCase().endsWith('.pack') ? defaultName : `${defaultName}.pack`;
+    const res = await showDialog({
+        title: 'Create Pack Archive',
+        templateId: 'tpl-pack-create-name',
+        confirmLabel: 'Send Pack',
+        init(body) {
+            const input = body.querySelector('input[name="packName"]');
+            if (input) {
+                input.value = initialName;
+                input.select();
+            }
+        }
+    });
+    if (!res || !res.packName || !res.packName.trim()) {
+        setStatus('Pack creation cancelled.');
+        return;
+    }
+    let packName = res.packName.trim();
+    if (!packName.toLowerCase().endsWith('.pack')) {
+        packName += '.pack';
+    }
+    await sendPackPipeline(fileList, packName, envelope);
+}
+fileInput?.addEventListener('change', async () => {
+    const files = fileInput?.files;
+    if (!files || files.length === 0)
+        return;
+    if (files.length === 1) {
+        const file = files[0];
+        await sendPayload({ type: 'file', fileName: file.name, file, ...getEnvelope() });
+        if (fileInput)
+            fileInput.value = '';
+        scrollToBottom();
+        return;
+    }
+    // Multiple files selected: bundle into pack
+    const items = [];
+    for (let i = 0; i < files.length; i++) {
+        items.push({ file: files[i], path: files[i].name });
+    }
+    const firstBase = files[0].name.replace(/\.[^/.]+$/, '');
+    const defaultName = `${firstBase}_pack.pack`;
+    if (fileInput)
+        fileInput.value = '';
+    await promptPackNameAndSend(items, defaultName);
+});
+const importPmsgBtn = document.getElementById('btn-import-pmsg');
+const inputPmsgFile = document.getElementById('input-pmsg-file');
+importPmsgBtn?.addEventListener('click', () => inputPmsgFile?.click());
+inputPmsgFile?.addEventListener('change', async () => {
+    const file = inputPmsgFile?.files?.[0];
+    if (!file)
+        return;
+    setStatus('Importing portable message…');
+    try {
+        const res = await graffiti.importMessages(file);
+        if (res.ok) {
+            setStatus(`Imported ${res.imported} message(s) (${res.skipped} skipped, ${res.peers} peer(s)).`);
+            await queueRefreshMessages();
+        }
+        else {
+            setStatus(`Import failed: ${res.error || 'Unknown error'}`);
+        }
+    }
+    catch (err) {
+        setStatus(`Import failed: ${err?.message || err}`);
+    }
+    finally {
+        if (inputPmsgFile)
+            inputPmsgFile.value = '';
+    }
+});
+// ── Drag-and-drop ─────────────────────────────────────────────────────────────
+let dragDepth = 0;
+messagesSection?.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragDepth++ === 0)
+        messagesSection.classList.add('is-dragover');
+});
+messagesSection?.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+});
+messagesSection?.addEventListener('dragleave', (e) => {
+    e.stopPropagation();
+    if (--dragDepth === 0)
+        messagesSection.classList.remove('is-dragover');
+});
+messagesSection?.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth = 0;
+    messagesSection.classList.remove('is-dragover');
+    if (!event.dataTransfer) {
+        setStatus('Nothing to send from drop.');
+        return;
+    }
+    // Check if files or folders were dropped
+    const dropped = await extractDroppedEntries(event.dataTransfer);
+    if (dropped.items.length > 0) {
+        if (dropped.items.length === 1 && !dropped.isFolder) {
+            const single = dropped.items[0];
+            if (single.file.name.endsWith('.pmsg')) {
+                if (confirm(`Import portable message pack "${single.file.name}"?`)) {
+                    setStatus('Importing portable message…');
+                    try {
+                        const res = await graffiti.importMessages(single.file);
+                        if (res.ok) {
+                            setStatus(`Imported ${res.imported} message(s) (${res.skipped} skipped, ${res.peers} peer(s)).`);
+                            await queueRefreshMessages();
+                        }
+                        else {
+                            setStatus(`Import failed: ${res.error || 'Unknown error'}`);
+                        }
+                    }
+                    catch (err) {
+                        setStatus(`Import failed: ${err?.message || err}`);
+                    }
+                    return;
+                }
+            }
+            await sendPayload({ type: 'file', fileName: single.file.name, file: single.file, ...getEnvelope() });
+            return;
+        }
+        // Multiple files or folder dropped -> Create Pack
+        const defaultName = dropped.defaultName
+            ? dropped.defaultName
+            : `${dropped.items[0].file.name.replace(/\.[^/.]+$/, '')}_pack`;
+        await promptPackNameAndSend(dropped.items, defaultName);
+        return;
+    }
+    // Plain text or HTML fallback
+    const plain = event.dataTransfer.getData('text/plain');
+    if (plain) {
+        await sendPayload({ type: 'text', text: plain, ...getEnvelope() });
+        return;
+    }
+    const html = event.dataTransfer.getData('text/html');
+    if (html) {
+        await sendPayload({ type: 'text', text: html, ...getEnvelope() });
+        return;
+    }
+    setStatus('Nothing to send from drop.');
+});
+// ── Clipboard paste (files / screenshots / text) ─────────────────────────────
+document.addEventListener('paste', async (event) => {
+    const activeSection = document.querySelector('.app-section.is-active');
+    if (!activeSection || activeSection.id !== 'section-messages')
+        return;
+    if (!event.clipboardData)
+        return;
+    const target = event.target;
+    const isTextInput = target && (target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && target.type === 'text'));
+    // Extract clipboard files synchronously before any async ticks (DataTransfer protected mode)
+    const clipboardFiles = [];
+    const dt = event.clipboardData;
+    if (dt.files && dt.files.length > 0) {
+        for (let i = 0; i < dt.files.length; i++) {
+            clipboardFiles.push(dt.files[i]);
+        }
+    }
+    else if (dt.items && dt.items.length > 0) {
+        for (let i = 0; i < dt.items.length; i++) {
+            const item = dt.items[i];
+            if (item.kind === 'file') {
+                const f = item.getAsFile();
+                if (f)
+                    clipboardFiles.push(f);
+            }
+        }
+    }
+    // If pasting text into an input or textarea, allow browser default handling
+    if (isTextInput && clipboardFiles.length === 0) {
+        return;
+    }
+    // If clipboard has files or images (e.g. screenshot or copied files)
+    if (clipboardFiles.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (clipboardFiles.length === 1) {
+            const single = clipboardFiles[0];
+            const fileName = single.name || 'clipboard-image.png';
+            await sendPayload({ type: 'file', fileName, file: single, ...getEnvelope() });
+            return;
+        }
+        // Multiple files pasted -> Create Pack
+        const items = clipboardFiles.map(file => ({ file, path: file.name }));
+        const defaultName = `${items[0].file.name.replace(/\.[^/.]+$/, '')}_pack`;
+        await promptPackNameAndSend(items, defaultName);
+        return;
+    }
+    // Focus is outside the textarea and user pasted plain text
+    const plain = dt.getData('text/plain');
+    if (plain && !isTextInput) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (messageText) {
+            messageText.value = plain;
+            autoResizeTextarea(messageText);
+            messageText.focus();
+            setStatus('Text pasted into message box. Press Enter or Ctrl+Enter to send.');
+        }
+    }
+});
+// ── Bootstrap & Foreground Lifecycle ──────────────────────────────────────────
+setStatus('Ready');
+autoResizeTextarea(messageText);
+const composerElement = document.querySelector('.composer');
+function updateComposerHeight() {
+    if (!composerElement)
+        return;
+    const height = composerElement.offsetHeight;
+    if (height > 0) {
+        document.documentElement.style.setProperty('--composer-height', `${height}px`);
+    }
+}
+if (composerElement && typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+        updateComposerHeight();
+    }).observe(composerElement);
+    updateComposerHeight();
+}
+onSectionShow('section-messages', () => {
+    updateComposerHeight();
+    shouldScrollToBottomOnLoad = true;
+    void populateSelects();
+    renderMessageList();
+    scrollToBottom();
+    void queueRefreshMessages();
+});
+// ── Notifications ─────────────────────────────────────────────────────────────
+let lastNotificationTime = 0;
+function getMessageTypeText(type) {
+    if (isText(type))
+        return 'New text message';
+    if (isImage(type))
+        return 'New image message';
+    if (isAudio(type))
+        return 'New audio message';
+    if (isVideo(type))
+        return 'New video message';
+    return 'New file message';
+}
+function notifyNewMessage(msg) {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        if (document.hidden || !document.hasFocus()) {
+            const now = Date.now();
+            if (now - lastNotificationTime < 2000)
+                return; // rate limit notifications to 2s
+            lastNotificationTime = now;
+            const author = msg.author || 'Unknown';
+            const textPreview = getMessageTypeText(msg.type);
+            new Notification(`Graffiti: Message from ${author}`, {
+                body: textPreview,
+                icon: 'graffiti.png'
+            });
+        }
+    }
+}
+// Request notification permission on first user click
+if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    const requestPermission = () => {
+        Notification.requestPermission().catch(err => console.warn('Notification permission request failed:', err));
+    };
+    document.addEventListener('click', requestPermission, { once: true });
+}
+// ── Unified Media Content Viewer & Zoom Controller ────────────────────────────
+let currentViewerMsg = null;
+let currentRawText = '';
+let isRawTextView = false;
+let currentTextFontSizePercent = 100;
+// Image zoom & pan state (Canvas-based to preserve 100% full native resolution)
+let loadedViewerImg = null;
+let currentImageLoadId = 0;
+let imgScale = 1.0;
+let imgTranslateX = 0;
+let imgTranslateY = 0;
+let isImgDragging = false;
+let imgDragStartX = 0;
+let imgDragStartY = 0;
+let imgInitialPinchDist = 0;
+let imgInitialScale = 1.0;
+let imgLastTapTime = 0;
+let animFrameId = null;
+let renderScheduled = false;
+function updateZoomBadge() {
+    const badge = document.getElementById('img-zoom-level');
+    if (badge) {
+        badge.textContent = `${Math.round(imgScale * 100)}%`;
+    }
+}
+function clampTranslation() {
+    if (!loadedViewerImg)
+        return;
+    const viewport = document.getElementById('view-content-image-viewport');
+    if (!viewport)
+        return;
+    const rect = viewport.getBoundingClientRect();
+    const vw = rect.width;
+    const vh = rect.height;
+    if (vw <= 0 || vh <= 0)
+        return;
+    if (imgScale <= 1.0) {
+        imgTranslateX = 0;
+        imgTranslateY = 0;
+        return;
+    }
+    const fitRatio = Math.min(vw / loadedViewerImg.naturalWidth, vh / loadedViewerImg.naturalHeight);
+    const currentW = loadedViewerImg.naturalWidth * fitRatio * imgScale;
+    const currentH = loadedViewerImg.naturalHeight * fitRatio * imgScale;
+    const maxPanX = Math.max(0, (currentW - vw) / 2) + vw * 0.4;
+    const maxPanY = Math.max(0, (currentH - vh) / 2) + vh * 0.4;
+    imgTranslateX = Math.max(-maxPanX, Math.min(maxPanX, imgTranslateX));
+    imgTranslateY = Math.max(-maxPanY, Math.min(maxPanY, imgTranslateY));
+}
+function renderImageCanvas() {
+    const canvas = document.getElementById('view-content-image-canvas');
+    const viewport = document.getElementById('view-content-image-viewport');
+    if (!canvas || !viewport)
+        return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx)
+        return;
+    const rect = viewport.getBoundingClientRect();
+    const vw = rect.width;
+    const vh = rect.height;
+    if (vw <= 0 || vh <= 0)
+        return;
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.round(vw * dpr);
+    const targetH = Math.round(vh * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+    }
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, vw, vh);
+    if (!loadedViewerImg || !loadedViewerImg.naturalWidth || !loadedViewerImg.naturalHeight) {
+        ctx.restore();
+        return;
+    }
+    const nw = loadedViewerImg.naturalWidth;
+    const nh = loadedViewerImg.naturalHeight;
+    const fitRatio = Math.min(vw / nw, vh / nh);
+    const baseW = nw * fitRatio;
+    const baseH = nh * fitRatio;
+    const currentW = baseW * imgScale;
+    const currentH = baseH * imgScale;
+    const cx = vw / 2;
+    const cy = vh / 2;
+    const drawX = cx - (currentW / 2) + imgTranslateX;
+    const drawY = cy - (currentH / 2) + imgTranslateY;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(loadedViewerImg, drawX, drawY, currentW, currentH);
+    ctx.restore();
+}
+function scheduleImageRender() {
+    if (!renderScheduled) {
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+            renderScheduled = false;
+            renderImageCanvas();
+        });
+    }
+}
+function animateImageTransform(targetScale, targetTx, targetTy, durationMs = 180) {
+    if (animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+    }
+    const startScale = imgScale;
+    const startTx = imgTranslateX;
+    const startTy = imgTranslateY;
+    const startTime = performance.now();
+    function step(now) {
+        const elapsed = now - startTime;
+        const progress = Math.min(1, elapsed / durationMs);
+        const ease = 1 - Math.pow(1 - progress, 3); // cubic ease-out
+        imgScale = +(startScale + (targetScale - startScale) * ease).toFixed(3);
+        imgTranslateX = startTx + (targetTx - startTx) * ease;
+        imgTranslateY = startTy + (targetTy - startTy) * ease;
+        clampTranslation();
+        updateZoomBadge();
+        renderImageCanvas();
+        if (progress < 1) {
+            animFrameId = requestAnimationFrame(step);
+        }
+        else {
+            imgScale = targetScale;
+            imgTranslateX = targetTx;
+            imgTranslateY = targetTy;
+            clampTranslation();
+            animFrameId = null;
+            updateZoomBadge();
+            renderImageCanvas();
+        }
+    }
+    animFrameId = requestAnimationFrame(step);
+}
+function resetImageZoom(animate = true) {
+    if (animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+    }
+    isImgDragging = false;
+    if (animate) {
+        animateImageTransform(1.0, 0, 0);
+    }
+    else {
+        imgScale = 1.0;
+        imgTranslateX = 0;
+        imgTranslateY = 0;
+        updateZoomBadge();
+        renderImageCanvas();
+    }
+}
+function zoomImageIn() {
+    const newScale = Math.min(16.0, +(imgScale + 0.25).toFixed(2));
+    if (newScale === imgScale)
+        return;
+    const factor = newScale / imgScale;
+    animateImageTransform(newScale, imgTranslateX * factor, imgTranslateY * factor);
+}
+function zoomImageOut() {
+    const newScale = Math.max(0.25, +(imgScale - 0.25).toFixed(2));
+    if (newScale === imgScale)
+        return;
+    if (newScale <= 1.0) {
+        animateImageTransform(newScale, 0, 0);
+    }
+    else {
+        const factor = newScale / imgScale;
+        animateImageTransform(newScale, imgTranslateX * factor, imgTranslateY * factor);
+    }
+}
+function loadViewerImage(url) {
+    const loadId = ++currentImageLoadId;
+    resetImageZoom(false);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+        if (loadId !== currentImageLoadId)
+            return;
+        loadedViewerImg = img;
+        resetImageZoom(false);
+        renderImageCanvas();
+    };
+    img.onerror = () => {
+        if (loadId !== currentImageLoadId)
+            return;
+        loadedViewerImg = null;
+        renderImageCanvas();
+    };
+    img.src = url;
+}
+export function cleanupViewerMedia() {
+    currentImageLoadId++;
+    loadedViewerImg = null;
+    if (animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+    }
+    const video = document.getElementById('view-content-video');
+    if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+    }
+    const audio = document.getElementById('view-content-audio');
+    if (audio) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+    }
+    const iframe = document.getElementById('view-content-iframe');
+    if (iframe) {
+        iframe.src = 'about:blank';
+    }
+    resetImageZoom(false);
+    renderImageCanvas();
+}
+function initImageZoomController() {
+    const viewport = document.getElementById('view-content-image-viewport');
+    const zoomInBtn = document.getElementById('btn-img-zoom-in');
+    const zoomOutBtn = document.getElementById('btn-img-zoom-out');
+    const zoomResetBtn = document.getElementById('btn-img-zoom-reset');
+    const badge = document.getElementById('img-zoom-level');
+    zoomInBtn?.addEventListener('click', (e) => {
+        e.preventDefault();
+        zoomImageIn();
+    });
+    zoomOutBtn?.addEventListener('click', (e) => {
+        e.preventDefault();
+        zoomImageOut();
+    });
+    zoomResetBtn?.addEventListener('click', (e) => {
+        e.preventDefault();
+        resetImageZoom(true);
+    });
+    badge?.addEventListener('click', () => {
+        if (imgScale >= 4.0) {
+            resetImageZoom(true);
+        }
+        else if (imgScale >= 2.0) {
+            animateImageTransform(4.0, imgTranslateX * 2, imgTranslateY * 2);
+        }
+        else if (imgScale >= 1.0) {
+            animateImageTransform(2.0, imgTranslateX * 2, imgTranslateY * 2);
+        }
+        else {
+            resetImageZoom(true);
+        }
+    });
+    if (badge)
+        badge.style.cursor = 'pointer';
+    if (!viewport)
+        return;
+    // Touch gestures: pinch-to-zoom, pan, double-tap
+    viewport.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) {
+            const touch = e.touches[0];
+            const now = Date.now();
+            if (now - imgLastTapTime < 320) {
+                // Double-tap: toggle 1.0x <-> 2.5x
+                if (imgScale > 1.2) {
+                    resetImageZoom(true);
+                }
+                else {
+                    const rect = viewport.getBoundingClientRect();
+                    const mouseX = touch.clientX - rect.left;
+                    const mouseY = touch.clientY - rect.top;
+                    const cx = rect.width / 2;
+                    const cy = rect.height / 2;
+                    const targetScale = 2.5;
+                    const factor = targetScale / imgScale;
+                    const relX = mouseX - (cx + imgTranslateX);
+                    const relY = mouseY - (cy + imgTranslateY);
+                    const targetTx = mouseX - cx - (relX * factor);
+                    const targetTy = mouseY - cy - (relY * factor);
+                    animateImageTransform(targetScale, targetTx, targetTy);
+                }
+                imgLastTapTime = 0;
+                return;
+            }
+            imgLastTapTime = now;
+            if (imgScale > 1.0) {
+                isImgDragging = true;
+                imgDragStartX = touch.clientX - imgTranslateX;
+                imgDragStartY = touch.clientY - imgTranslateY;
+            }
+        }
+        else if (e.touches.length === 2) {
+            isImgDragging = false;
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            imgInitialPinchDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            imgInitialScale = imgScale;
+        }
+    }, { passive: false });
+    viewport.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2 && imgInitialPinchDist > 0) {
+            e.preventDefault();
+            const t1 = e.touches[0];
+            const t2 = e.touches[1];
+            const currentDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            const pinchFactor = currentDist / imgInitialPinchDist;
+            const newScale = Math.min(16.0, Math.max(0.25, +(imgInitialScale * pinchFactor).toFixed(2)));
+            const rect = viewport.getBoundingClientRect();
+            const midX = (t1.clientX + t2.clientX) / 2 - rect.left;
+            const midY = (t1.clientY + t2.clientY) / 2 - rect.top;
+            const cx = rect.width / 2;
+            const cy = rect.height / 2;
+            const factor = newScale / imgScale;
+            const relX = midX - (cx + imgTranslateX);
+            const relY = midY - (cy + imgTranslateY);
+            imgTranslateX = midX - cx - (relX * factor);
+            imgTranslateY = midY - cy - (relY * factor);
+            imgScale = newScale;
+            clampTranslation();
+            updateZoomBadge();
+            scheduleImageRender();
+        }
+        else if (e.touches.length === 1 && isImgDragging && imgScale > 1.0) {
+            e.preventDefault();
+            const touch = e.touches[0];
+            imgTranslateX = touch.clientX - imgDragStartX;
+            imgTranslateY = touch.clientY - imgDragStartY;
+            clampTranslation();
+            scheduleImageRender();
+        }
+    }, { passive: false });
+    viewport.addEventListener('touchend', (e) => {
+        if (e.touches.length === 0) {
+            isImgDragging = false;
+            imgInitialPinchDist = 0;
+            if (imgScale <= 1.0) {
+                animateImageTransform(1.0, 0, 0);
+            }
+        }
+        else if (e.touches.length === 1 && imgScale > 1.0) {
+            const touch = e.touches[0];
+            isImgDragging = true;
+            imgDragStartX = touch.clientX - imgTranslateX;
+            imgDragStartY = touch.clientY - imgTranslateY;
+        }
+    });
+    // Mouse events: drag to pan when zoomed, mouse wheel to zoom
+    viewport.addEventListener('mousedown', (e) => {
+        if (e.button === 0 && imgScale > 1.0) {
+            isImgDragging = true;
+            imgDragStartX = e.clientX - imgTranslateX;
+            imgDragStartY = e.clientY - imgTranslateY;
+            viewport.classList.add('is-dragging');
+        }
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (isImgDragging) {
+            imgTranslateX = e.clientX - imgDragStartX;
+            imgTranslateY = e.clientY - imgDragStartY;
+            clampTranslation();
+            scheduleImageRender();
+        }
+    });
+    window.addEventListener('mouseup', () => {
+        if (isImgDragging) {
+            isImgDragging = false;
+            viewport.classList.remove('is-dragging');
+        }
+    });
+    viewport.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.25 : -0.25;
+        const newScale = Math.min(16.0, Math.max(0.25, +(imgScale + delta).toFixed(2)));
+        if (newScale === imgScale)
+            return;
+        if (newScale <= 1.0) {
+            animateImageTransform(newScale, 0, 0, 100);
+            return;
+        }
+        const rect = viewport.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const factor = newScale / imgScale;
+        const relX = mouseX - (cx + imgTranslateX);
+        const relY = mouseY - (cy + imgTranslateY);
+        imgTranslateX = mouseX - cx - (relX * factor);
+        imgTranslateY = mouseY - cy - (relY * factor);
+        imgScale = newScale;
+        clampTranslation();
+        updateZoomBadge();
+        scheduleImageRender();
+    }, { passive: false });
+    viewport.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        if (!loadedViewerImg)
+            return;
+        if (imgScale > 1.2) {
+            resetImageZoom(true);
+        }
+        else {
+            const rect = viewport.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            const cx = rect.width / 2;
+            const cy = rect.height / 2;
+            const targetScale = 2.5;
+            const factor = targetScale / imgScale;
+            const relX = mouseX - (cx + imgTranslateX);
+            const relY = mouseY - (cy + imgTranslateY);
+            const targetTx = mouseX - cx - (relX * factor);
+            const targetTy = mouseY - cy - (relY * factor);
+            animateImageTransform(targetScale, targetTx, targetTy);
+        }
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(() => {
+            scheduleImageRender();
+        });
+        ro.observe(viewport);
+    }
+    else {
+        window.addEventListener('resize', () => scheduleImageRender());
+    }
+}
+function initTextViewerControls() {
+    const decBtn = document.getElementById('btn-text-font-dec');
+    const incBtn = document.getElementById('btn-text-font-inc');
+    const rawBtn = document.getElementById('btn-text-toggle-raw');
+    const textPre = document.getElementById('view-content-text');
+    decBtn?.addEventListener('click', () => {
+        currentTextFontSizePercent = Math.max(50, currentTextFontSizePercent - 10);
+        if (textPre)
+            textPre.style.fontSize = `${currentTextFontSizePercent}%`;
+    });
+    incBtn?.addEventListener('click', () => {
+        currentTextFontSizePercent = Math.min(250, currentTextFontSizePercent + 10);
+        if (textPre)
+            textPre.style.fontSize = `${currentTextFontSizePercent}%`;
+    });
+    rawBtn?.addEventListener('click', () => {
+        isRawTextView = !isRawTextView;
+        rawBtn.classList.toggle('is-active', isRawTextView);
+        if (textPre) {
+            if (isRawTextView) {
+                textPre.textContent = currentRawText;
+            }
+            else {
+                textPre.innerHTML = renderMarkdown(currentRawText);
+            }
+        }
+    });
+}
+export function openFullContentViewer(msg, fullText) {
+    const isPack = isPackFile(msg.name, msg.type);
+    if (isPack) {
+        void openPackFile({ encKey: msg.key, name: msg.name });
+        return;
+    }
+    currentViewerMsg = msg;
+    const url = graffiti.contentUrl(msg.key);
+    // Cleanup any currently playing media
+    cleanupViewerMedia();
+    // Containers
+    const imgContainer = document.getElementById('view-content-image-container');
+    const textContainer = document.getElementById('view-content-text-container');
+    const videoContainer = document.getElementById('view-content-video-container');
+    const audioContainer = document.getElementById('view-content-audio-container');
+    const htmlContainer = document.getElementById('view-content-html-container');
+    const genericContainer = document.getElementById('view-content-generic-container');
+    if (imgContainer)
+        imgContainer.style.display = 'none';
+    if (textContainer)
+        textContainer.style.display = 'none';
+    if (videoContainer)
+        videoContainer.style.display = 'none';
+    if (audioContainer)
+        audioContainer.style.display = 'none';
+    if (htmlContainer)
+        htmlContainer.style.display = 'none';
+    if (genericContainer)
+        genericContainer.style.display = 'none';
+    const isHtmlFile = isHtml(msg.type) || (msg.name && (msg.name.toLowerCase().endsWith('.html') || msg.name.toLowerCase().endsWith('.htm')));
+    if (isImage(msg.type)) {
+        if (imgContainer)
+            imgContainer.style.display = '';
+        loadViewerImage(url);
+    }
+    else if (isVideo(msg.type)) {
+        if (videoContainer)
+            videoContainer.style.display = '';
+        const video = document.getElementById('view-content-video');
+        if (video) {
+            video.src = url;
+            video.load();
+        }
+    }
+    else if (isAudio(msg.type)) {
+        if (audioContainer)
+            audioContainer.style.display = '';
+        const audio = document.getElementById('view-content-audio');
+        const audioTitle = document.getElementById('view-content-audio-title');
+        if (audioTitle)
+            audioTitle.textContent = msg.name || 'Audio Track';
+        if (audio) {
+            attachCustomAudioPlayer(audio);
+            audio.src = url;
+            audio.load();
+        }
+    }
+    else if (isHtmlFile) {
+        if (htmlContainer)
+            htmlContainer.style.display = '';
+        const iframe = document.getElementById('view-content-iframe');
+        if (iframe) {
+            iframe.src = url;
+        }
+    }
+    else if (isText(msg.type)) {
+        if (textContainer)
+            textContainer.style.display = '';
+        const textPre = document.getElementById('view-content-text');
+        isRawTextView = false;
+        const rawBtn = document.getElementById('btn-text-toggle-raw');
+        if (rawBtn)
+            rawBtn.classList.remove('is-active');
+        if (textPre) {
+            textPre.style.fontSize = `${currentTextFontSizePercent}%`;
+            const render = (t) => {
+                currentRawText = t;
+                textPre.innerHTML = renderMarkdown(t);
+            };
+            if (fullText !== undefined && fullText !== '') {
+                render(fullText);
+            }
+            else {
+                const cached = textContentCache.get(msg.key);
+                if (cached !== undefined) {
+                    render(cached);
+                }
+                else {
+                    textPre.textContent = 'Loading content…';
+                    fetch(url)
+                        .then(r => r.text())
+                        .then(t => {
+                        textContentCache.set(msg.key, t);
+                        render(t);
+                    })
+                        .catch((err) => {
+                        textPre.textContent = `[Error loading content: ${err.message}]`;
+                    });
+                }
+            }
+        }
+    }
+    else {
+        if (genericContainer)
+            genericContainer.style.display = '';
+        const genericName = document.getElementById('view-content-generic-name');
+        const genericMeta = document.getElementById('view-content-generic-meta');
+        const sizeStr = msg.size ? ` • ${formatSize(msg.size)}` : '';
+        if (genericName)
+            genericName.textContent = msg.name || 'File Attachment';
+        if (genericMeta)
+            genericMeta.textContent = `${msg.type ? `Type: ${msg.type.toUpperCase()}` : ''}${sizeStr}`;
+    }
+    showSection('section-view-content');
+}
+function escHtml(str) {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+function sanitizeUrl(url) {
+    const clean = url.trim().replace(/&amp;/g, '&');
+    // Block dangerous protocol schemes like javascript:, vbscript:, data:
+    if (/^\s*(javascript|vbscript|data):/i.test(clean)) {
+        return '#';
+    }
+    // Allow standard web protocols, mailto, relative paths, anchor fragments, local files
+    if (/^(https?:|mailto:|\/|\.\/|\.\.\/|#|[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)/i.test(clean)) {
+        return clean;
+    }
+    // Relative path without known protocol
+    if (!/^[a-zA-Z0-9+.-]+:/.test(clean)) {
+        return clean;
+    }
+    return '#';
+}
+function inlineFormat(text) {
+    // Bold & Italic (Asterisks & Underscores)
+    // Triple: ***bold-italic*** or ___bold-italic___
+    return text
+        .replace(/\*\*\*([^\*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+        .replace(/(^|[^\w])___([^_]+)___(?=[^\w]|$)/g, '$1<strong><em>$2</em></strong>')
+        // Double: **bold** or __bold__
+        .replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^\w])__([^_]+)__(?=[^\w]|$)/g, '$1<strong>$2</strong>')
+        // Single: *italic* or _italic_
+        .replace(/(^|[^\*])\*([^\*]+)\*(?!\*)/g, '$1<em>$2</em>')
+        .replace(/(^|[^\w])_([^_]+)_(?=[^\w]|$)/g, '$1<em>$2</em>')
+        // Strikethrough: ~~text~~
+        .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+}
+export function renderMarkdown(raw) {
+    if (!raw)
+        return '';
+    // Normalize carriage returns (\r\n and \r -> \n)
+    const cleanRaw = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // 1. Stash code blocks and inline code BEFORE general escaping and block processing
+    const codeBlocks = [];
+    const inlineCodes = [];
+    const rawUrls = [];
+    // Fenced code blocks with optional language
+    let text = cleanRaw.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+        const idx = codeBlocks.length;
+        const langClass = lang ? ` class="language-${escHtml(lang)}"` : '';
+        codeBlocks.push(`<pre class="msg-code-block"><code${langClass}>${escHtml(code.replace(/\n$/, ''))}</code></pre>`);
+        return `\n\n@@@CODE_BLOCK_${idx}@@@\n\n`;
+    });
+    // Inline code
+    text = text.replace(/`([^`\n]+)`/g, (_m, code) => {
+        const idx = inlineCodes.length;
+        inlineCodes.push(`<code>${escHtml(code)}</code>`);
+        return `@@@INLINE_CODE_${idx}@@@`;
+    });
+    // Raw URLs (full links only, no separate label & URL format)
+    const rawUrlRegex = /\bhttps?:\/\/[^\s<>"'\[\]\(\)]+(?:\([^\s<>"'\[\]\(\)]*\)[^\s<>"'\[\]\(\)]*)*[^\s<>"'`.,:;!?\(\)\[\]\{\}]/g;
+    text = text.replace(rawUrlRegex, (url) => {
+        const clean = sanitizeUrl(url);
+        if (clean !== '#' && (clean.startsWith('http://') || clean.startsWith('https://'))) {
+            const idx = rawUrls.length;
+            const esc = escHtml(clean);
+            rawUrls.push(`<a href="${esc}" class="msg-link msg-external-link" data-url="${esc}" title="Open external link: ${esc}" rel="noopener noreferrer">${esc}</a>`);
+            return `@@@RAWURL${idx}@@@`;
+        }
+        return url;
+    });
+    // 2. Process block elements line-by-line
+    const lines = text.split('\n');
+    const result = [];
+    let listType = null;
+    let bqLines = [];
+    let paraLines = [];
+    const flushList = () => {
+        if (listType) {
+            result.push(listType === 'ul' ? '</ul>' : '</ol>');
+            listType = null;
+        }
+    };
+    const flushBq = () => {
+        if (bqLines.length > 0) {
+            result.push(`<blockquote class="msg-blockquote">${bqLines.map(l => inlineFormat(escHtml(l))).join('<br>')}</blockquote>`);
+            bqLines = [];
+        }
+    };
+    const flushPara = () => {
+        if (paraLines.length > 0) {
+            result.push(`<p class="msg-para">${paraLines.map(l => inlineFormat(escHtml(l))).join('<br>')}</p>`);
+            paraLines = [];
+        }
+    };
+    const flushAll = () => {
+        flushList();
+        flushBq();
+        flushPara();
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Placeholder check
+        const cbMatch = line.trim().match(/^@@@CODE_BLOCK_(\d+)@@@$/);
+        if (cbMatch) {
+            flushAll();
+            result.push(codeBlocks[Number(cbMatch[1])]);
+            continue;
+        }
+        // Blank line terminates active blocks
+        if (line.trim() === '') {
+            flushAll();
+            continue;
+        }
+        // Blockquote
+        const bqMatch = line.match(/^>\s?(.*)$/);
+        if (bqMatch) {
+            flushList();
+            flushPara();
+            bqLines.push(bqMatch[1]);
+            continue;
+        }
+        else {
+            flushBq();
+        }
+        // Lists
+        const ulMatch = line.match(/^[\*\-\+]\s+(.+)$/);
+        const olMatch = line.match(/^\d+\.\s+(.+)$/);
+        if (ulMatch || olMatch) {
+            flushPara();
+            const currentType = ulMatch ? 'ul' : 'ol';
+            const itemText = ulMatch ? ulMatch[1] : olMatch[1];
+            if (listType !== currentType) {
+                flushList();
+                result.push(currentType === 'ul' ? '<ul class="msg-list">' : '<ol class="msg-list">');
+                listType = currentType;
+            }
+            result.push(`<li>${inlineFormat(escHtml(itemText))}</li>`);
+            continue;
+        }
+        else {
+            flushList();
+        }
+        // Headings
+        const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
+        if (hMatch) {
+            flushPara();
+            const level = hMatch[1].length;
+            result.push(`<h${level} class="msg-h${level}">${inlineFormat(escHtml(hMatch[2]))}</h${level}>`);
+            continue;
+        }
+        // Standard paragraph line (buffered)
+        paraLines.push(line.trim());
+    }
+    flushAll();
+    // 3. Restore inline code and raw URLs
+    return result.join('')
+        .replace(/@@@INLINE_CODE_(\d+)@@@/g, (_m, idx) => inlineCodes[Number(idx)] || '')
+        .replace(/@@@RAWURL(\d+)@@@/g, (_m, idx) => rawUrls[Number(idx)] || '');
+}
+async function confirmOpenExternalLink(url) {
+    const res = await showDialog({
+        title: 'External Link',
+        templateId: 'tpl-external-link-confirm',
+        confirmLabel: 'Open in Default Browser',
+        init(body) {
+            const urlBox = body.querySelector('#ext-link-url');
+            if (urlBox) {
+                urlBox.textContent = url;
+            }
+            const copyBtn = body.querySelector('#btn-copy-ext-link');
+            const copyText = body.querySelector('#btn-copy-ext-link-text');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', async () => {
+                    try {
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            await navigator.clipboard.writeText(url);
+                        }
+                        else {
+                            const ta = document.createElement('textarea');
+                            ta.value = url;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                        }
+                        if (copyText) {
+                            const prev = copyText.textContent;
+                            copyText.textContent = 'Copied!';
+                            setTimeout(() => {
+                                copyText.textContent = prev;
+                            }, 1500);
+                        }
+                    }
+                    catch (err) {
+                        setStatus(`Failed to copy link: ${err?.message || err}`);
+                    }
+                });
+            }
+        }
+    });
+    if (res !== null) {
+        try {
+            await graffiti.openExternalUrl(url);
+            setStatus('Opening link in preferred browser…');
+        }
+        catch (err) {
+            setStatus(`Failed to open link: ${err?.message || err}`);
+        }
+    }
+}
+document.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!target)
+        return;
+    const extLink = target.closest('.msg-external-link');
+    if (extLink) {
+        e.preventDefault();
+        e.stopPropagation();
+        const url = extLink.dataset.url || extLink.href;
+        if (url) {
+            void confirmOpenExternalLink(url);
+        }
+        return;
+    }
+    const viewBtn = target.closest('.btn-view-text, .btn-view-media');
+    if (viewBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const item = viewBtn.closest('[data-msg-key]');
+        const key = item?.dataset.msgKey;
+        if (key) {
+            const msg = allFilteredMessages.find(m => m.key === key);
+            if (msg) {
+                const isPack = isPackFile(msg.name, msg.type);
+                if (isPack) {
+                    void openPackFile({ encKey: msg.key, name: msg.name });
+                }
+                else {
+                    openFullContentViewer(msg, textContentCache.get(key));
+                }
+            }
+        }
+        return;
+    }
+    const downloadBtn = target.closest('#btn-download-view-content');
+    if (downloadBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (currentViewerMsg) {
+            handleDownload(currentViewerMsg);
+        }
+        return;
+    }
+    const closeBtn = target.closest('#btn-close-view-content');
+    if (closeBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        cleanupViewerMedia();
+        showSection('section-messages');
+        return;
+    }
+});
+// Escape key to exit fullscreen viewer
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const viewerSection = document.getElementById('section-view-content');
+        if (viewerSection?.classList.contains('is-active')) {
+            e.preventDefault();
+            cleanupViewerMedia();
+            showSection('section-messages');
+        }
+    }
+});
+// ── Context Menu Actions & Event Listeners ────────────────────────────────────
+msgContextMenu?.addEventListener('click', async (e) => {
+    const target = e.target;
+    const btn = target?.closest('.msg-context-item');
+    if (!btn || !activeContextMsg)
+        return;
+    const action = btn.dataset.action;
+    const msg = activeContextMsg;
+    closeContextMenu();
+    if (action === 'view') {
+        openFullContentViewer(msg, textContentCache.get(msg.key));
+    }
+    else if (action === 'forward') {
+        await handleForward(msg);
+    }
+    else if (action === 'delete') {
+        try {
+            await graffiti.removeMessage(msg.key);
+            currentMessages.delete(msg.key);
+            textContentCache.delete(msg.key);
+            metaCache.delete(msg.key);
+            evictCachedElement(msg.key);
+            allRawMessages = allRawMessages.filter(m => m.key !== msg.key);
+            allKnownMessageKeys.delete(msg.key);
+            updateFilteredMessages();
+            renderMessageList();
+        }
+        catch (err) {
+            setStatus(`Delete failed: ${err?.message || err}`);
+        }
+    }
+    else if (action === 'quote' || action === 'reply') {
+        messageText?.focus();
+        await handleQuote(msg);
+    }
+    else if (action === 'copy') {
+        await handleCopy(msg);
+    }
+    else if (action === 'download') {
+        handleDownload(msg);
+    }
+    else if (action === 'export-portable') {
+        setStatus('Exporting portable message…');
+        try {
+            await graffiti.exportMessages({ key: msg.key });
+            setStatus('Message exported.');
+        }
+        catch (err) {
+            setStatus(`Export failed: ${err?.message || err}`);
+        }
+    }
+    else if (action === 'toggle-ignore') {
+        try {
+            const newIgnored = !msg.ignored;
+            await graffiti.setMessageIgnored(msg.key, newIgnored);
+            msg.ignored = newIgnored;
+            const cachedMeta = metaCache.get(msg.key);
+            if (cachedMeta)
+                cachedMeta.ignored = newIgnored;
+            renderMessageList();
+        }
+        catch (err) {
+            setStatus(`Failed to update ignore status: ${err?.message || err}`);
+        }
+    }
+    else if (action === 'info') {
+        void handleMessageInfo(msg);
+    }
+});
+document.addEventListener('click', (e) => {
+    if (msgContextMenu && !msgContextMenu.hidden && !msgContextMenu.contains(e.target)) {
+        closeContextMenu();
+    }
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeContextMenu();
+    }
+});
+window.addEventListener('scroll', () => {
+    if (msgContextMenu && !msgContextMenu.hidden) {
+        closeContextMenu();
+    }
+}, { passive: true });
+window.addEventListener('resize', () => {
+    if (msgContextMenu && !msgContextMenu.hidden) {
+        closeContextMenu();
+    }
+}, { passive: true });
+// Right-click on desktop
+messagesContainer?.addEventListener('contextmenu', (e) => {
+    const target = e.target;
+    const item = target?.closest('.message-item[data-msg-key]');
+    if (!item)
+        return;
+    e.preventDefault();
+    const key = item.dataset.msgKey;
+    const msg = allFilteredMessages.find(m => m.key === key);
+    if (msg) {
+        openContextMenu(e.clientX, e.clientY, msg);
+    }
+});
+// Prevent mobile / touch text selection highlighting on message boxes
+messagesContainer?.addEventListener('selectstart', (e) => {
+    const isTouchDevice = 'ontouchstart' in window || (navigator.maxTouchPoints != null && navigator.maxTouchPoints > 0);
+    if (isTouchDevice && e.target?.closest('.message-item')) {
+        e.preventDefault();
+    }
+});
+// Long-press on mobile touch devices
+let touchTimer = null;
+let touchStartX = 0;
+let touchStartY = 0;
+let isLongPressActive = false;
+messagesContainer?.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) {
+        if (touchTimer !== null)
+            clearTimeout(touchTimer);
+        touchTimer = null;
+        return;
+    }
+    const touch = e.touches[0];
+    const target = e.target;
+    const item = target?.closest('.message-item[data-msg-key]');
+    if (!item)
+        return;
+    touchStartX = touch.clientX;
+    touchStartY = touch.clientY;
+    isLongPressActive = false;
+    if (touchTimer !== null)
+        clearTimeout(touchTimer);
+    touchTimer = window.setTimeout(() => {
+        isLongPressActive = true;
+        try {
+            window.getSelection()?.removeAllRanges();
+        }
+        catch {
+        }
+        const key = item.dataset.msgKey;
+        const msg = allFilteredMessages.find(m => m.key === key);
+        if (msg) {
+            if ('vibrate' in navigator) {
+                try {
+                    navigator.vibrate(35);
+                }
+                catch {
+                }
+            }
+            openContextMenu(touchStartX, touchStartY, msg);
+        }
+    }, 450);
+}, { passive: true });
+messagesContainer?.addEventListener('touchmove', (e) => {
+    if (touchTimer === null)
+        return;
+    const touch = e.touches[0];
+    if (!touch)
+        return;
+    const dx = Math.abs(touch.clientX - touchStartX);
+    const dy = Math.abs(touch.clientY - touchStartY);
+    if (dx > 10 || dy > 10) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+    }
+}, { passive: true });
+messagesContainer?.addEventListener('touchend', (e) => {
+    if (touchTimer !== null) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+    }
+    if (isLongPressActive) {
+        e.preventDefault();
+    }
+});
+messagesContainer?.addEventListener('touchcancel', () => {
+    if (touchTimer !== null) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+    }
+});
+messagesContainer?.addEventListener('click', (e) => {
+    if (isLongPressActive) {
+        e.preventDefault();
+        e.stopPropagation();
+        isLongPressActive = false;
+    }
+}, true);
+// Initialize viewer controllers
+initImageZoomController();
+initTextViewerControls();
+// Cleanup media playback when switching tabs
+onSectionShow('section-messages', cleanupViewerMedia);
+onSectionShow('section-network', cleanupViewerMedia);
+onSectionShow('section-identity', cleanupViewerMedia);
+onSectionShow('section-settings', cleanupViewerMedia);
+onSectionShow('section-help', cleanupViewerMedia);
+// ── Content Download WebSocket Event Handlers ─────────────────────────────────
+onWsEvent('content_progress', (data) => {
+    const msgKey = data.messageKey;
+    if (!msgKey)
+        return;
+    const pct = Math.min(100, Math.max(0, data.progress ?? 0));
+    const isComplete = pct >= 100 || (data.bytesWritten > 0 && data.totalBytes > 0 && data.bytesWritten >= data.totalBytes);
+    if (isComplete) {
+        const meta = metaCache.get(msgKey);
+        if (meta)
+            meta.hasContent = true;
+        const rawMsg = allRawMessages.find(m => m.key === msgKey);
+        if (rawMsg)
+            rawMsg.hasContent = true;
+        const filteredMsg = allFilteredMessages.find(m => m.key === msgKey);
+        if (filteredMsg)
+            filteredMsg.hasContent = true;
+        evictCachedElement(msgKey);
+        renderMessageList();
+        queueRefreshMessages();
+        return;
+    }
+    const msgEl = messagesContainer?.querySelector(`[data-msg-key="${CSS.escape(msgKey)}"]`);
+    if (msgEl) {
+        const container = msgEl.querySelector('.placeholder-progress-container');
+        const text = msgEl.querySelector('.placeholder-progress-text');
+        const fill = msgEl.querySelector('.placeholder-progress-fill');
+        const dlBtn = msgEl.querySelector('.btn-download-content');
+        if (dlBtn)
+            dlBtn.style.display = 'none';
+        if (container)
+            container.style.display = 'block';
+        const displayPct = Math.max(5, pct);
+        if (fill)
+            fill.style.width = `${displayPct}%`;
+        if (text) {
+            const transferred = formatSize(data.bytesWritten || 0);
+            const total = data.totalBytes ? formatSize(data.totalBytes) : '';
+            text.textContent = total ? `Downloading: ${transferred} / ${total} (${pct}%)` : `Downloading: ${transferred}`;
+            text.style.color = '';
+        }
+    }
+});
+onWsEvent('content_download_failed', (data) => {
+    const msgKey = data.messageKey;
+    if (!msgKey)
+        return;
+    const msgEl = messagesContainer?.querySelector(`[data-msg-key="${CSS.escape(msgKey)}"]`);
+    if (msgEl) {
+        const container = msgEl.querySelector('.placeholder-progress-container');
+        const text = msgEl.querySelector('.placeholder-progress-text');
+        const dlBtn = msgEl.querySelector('.btn-download-content');
+        if (container)
+            container.style.display = 'block';
+        if (text) {
+            text.textContent = `Download failed: ${data.error || 'No connected peer has this content'}`;
+            text.style.color = '#ef4444';
+        }
+        if (dlBtn) {
+            dlBtn.style.display = '';
+            dlBtn.disabled = false;
+            dlBtn.textContent = '⬇ Download';
+        }
+    }
+});
+//# sourceMappingURL=messages.js.map

@@ -1,0 +1,62 @@
+package r3.encryption
+
+import r3.io.readFixedBytes
+import r3.math.EncryptedSequence
+import r3.pke.Password256
+import java.io.InputStream
+
+// This is a stream cipher that can be efficiently skipped to a position
+class EncryptedContinuousInputStream(
+	val seq: EncryptedSequence,
+	val istream: InputStream,
+	val autoCloseSeq: Boolean = false
+) : InputStream() {
+	private var pos = 0L
+
+	constructor(pass: Password256, istream: InputStream) : this(
+		EncryptedSequence.createSequence(pass),
+		istream,
+		autoCloseSeq = true
+	)
+
+	override fun read(b: ByteArray, off: Int, len: Int): Int {
+		if (len == 0) {
+			return 0
+		}
+		val n = istream.readFixedBytes(b, off, len)
+		if (n <= 0) {
+			return -1
+		}
+		seq.xor(b, off, n, pos)
+		pos += n
+		return n
+	}
+
+	override fun read(): Int {
+		val b = istream.read()
+		if (b < 0) {
+			return -1
+		}
+		return b xor (seq.get(pos++).toInt() and 0xFF)
+	}
+
+	override fun skip(n: Long): Long {
+		val skip = istream.skip(n)
+		pos += skip
+		return skip
+	}
+
+	override fun available(): Int {
+		return istream.available()
+	}
+
+	override fun close() {
+		try {
+			if (autoCloseSeq) {
+				seq.close()
+			}
+		} finally {
+			istream.close()
+		}
+	}
+}

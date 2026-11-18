@@ -1,0 +1,28 @@
+package r3.content
+
+import r3.io.getExtension
+import r3.util.humanReadableSize
+import java.io.InputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+
+class ZipEntryContent(
+	val zipFile: ZipFile,
+	val entry: ZipEntry,
+	override val path: String = entry.name.replace('\\', '/').removePrefix("/")
+) : Content {
+	override val ext: String = getExtension(path)
+	override val length: Long = entry.size
+	override val lastModified: Long =
+		entry.lastModifiedTime?.toMillis()?.takeIf { it > 0 }
+			?: entry.time.takeIf { it > 0 }
+			?: 0L
+
+	override fun createInputStream(): InputStream {
+		return zipFile.getInputStream(entry)
+	}
+
+	override fun toString(): String {
+		return "$path $ext ${length.humanReadableSize()}"
+	}
+}
