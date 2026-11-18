@@ -1,0 +1,11 @@
+Graffiti is a secure, serverless, peer-to-peer (P2P) messaging and media sharing application built for digital sovereignty and privacy. Unlike centralized chat platforms, Graffiti connects nodes directly and stores encrypted data locally on your device—with no central servers, accounts, phone numbers, or trackers.
+
+Key Features:
+
+* True Peer-to-Peer Connections: Start a local server node with one click or connect directly to peers by IP address and port.
+* End-to-End Encryption by Default: Every message and file is encrypted with public-key cryptography before leaving your device.
+* Deterministic Topic & Personal Identities: Generate and recover cryptographic profiles using secret seed phrases, with unique geometric avatar fingerprints. Communicate via shared Topic Identities or directly to a peer's public key.
+* Store-and-Forward Relays & NAT Bridges: Optionally enable Relay mode to cache encrypted payloads for asynchronous delivery, or Bridge mode to tunnel traffic between nodes behind private networks or NAT.
+* Local Wi-Fi / LAN Discovery: Automatically discover nearby peers over multicast or subnet IP scans for offline mesh communication without internet access.
+* Built-in Node Portals & Archive Streaming: Share personal static websites and media libraries via your node's Portal, or browse and stream .pack, encrypted .epack, .mhtml, and .zip archives directly without extracting to disk.
+* Granular Storage & Portable Backups: Set strict local storage quotas (MB), inspect per-identity disk usage, purge old payloads, or export/import encrypted conversations in portable .pmsg archives.

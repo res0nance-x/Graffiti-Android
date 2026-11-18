@@ -10,7 +10,6 @@ val dirHTMLTemplate = { json: JSONArray ->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Directory Listing</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
 --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
@@ -29,7 +28,7 @@ margin: 0;
 padding: 0;
 background: var(--bg-gradient);
 min-height: 100vh;
-font-family: 'Outfit', sans-serif;
+font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 color: var(--text-primary);
 display: flex;
 justify-content: center;

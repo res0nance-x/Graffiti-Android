@@ -441,31 +441,20 @@ class GraffitiService : Service() {
 						}
 					}
 					addOnGetVersionListener {
-						try {
+						val pInfo = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
+						val verName = pInfo?.versionName?.takeIf { it.isNotBlank() }
+						val buildDate = runCatching {
 							assets.open("build-date.txt").bufferedReader().use { it.readText().trim() }
 								.takeIf { it.isNotEmpty() }
-								?: run {
-									val pInfo = packageManager.getPackageInfo(packageName, 0)
-									val time = pInfo.lastUpdateTime.takeIf { it > 0L }
-										?: runCatching { java.io.File(packageResourcePath).lastModified() }.getOrNull()
-											?.takeIf { it > 0L }
-										?: System.currentTimeMillis()
-									java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
-										.format(java.util.Date(time))
-								}
-						} catch (_: Exception) {
-							try {
-								val pInfo = packageManager.getPackageInfo(packageName, 0)
-								val time = pInfo.lastUpdateTime.takeIf { it > 0L }
-									?: runCatching { java.io.File(packageResourcePath).lastModified() }.getOrNull()
-										?.takeIf { it > 0L }
-									?: System.currentTimeMillis()
-								java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
-									.format(java.util.Date(time))
-							} catch (_: Exception) {
-								"Unknown"
-							}
-						}
+						}.getOrNull() ?: runCatching {
+							val time = pInfo?.lastUpdateTime?.takeIf { it > 0L }
+								?: runCatching { File(packageResourcePath).lastModified() }.getOrNull()
+									?.takeIf { it > 0L }
+								?: System.currentTimeMillis()
+							java.text.SimpleDateFormat("yyyy-MM-dd:HH", java.util.Locale.getDefault())
+								.format(java.util.Date(time))
+						}.getOrNull() ?: "Unknown"
+						if (verName != null) "$verName ($buildDate)" else buildDate
 					}
 				}
 				this@GraffitiService.api = api

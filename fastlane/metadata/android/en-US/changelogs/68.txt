@@ -1,0 +1,2 @@
+- Initial F-Droid release of Graffiti P2P encrypted messaging and media sharing.
+- Self-contained source build with full open-source license documentation.

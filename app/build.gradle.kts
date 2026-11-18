@@ -35,13 +35,14 @@ android {
 		versionPropsFile.inputStream().use { versionProps.load(it) }
 	}
 	val buildNumber = (versionProps.getProperty("BUILD_NUMBER") ?: "1").toInt()
+	val appVersionName = (versionProps.getProperty("VERSION_NAME") ?: "1.0.0").trim()
 
 	defaultConfig {
 		applicationId = "r3.graffiti"
 		minSdk = 33
 		targetSdk = 37
 		versionCode = buildNumber
-		versionName = buildNumber.toString()
+		versionName = appVersionName
 
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 	}
