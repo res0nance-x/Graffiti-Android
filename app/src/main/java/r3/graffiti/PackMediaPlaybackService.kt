@@ -36,6 +36,7 @@ class PackMediaPlaybackService : Service() {
 		private const val CHANNEL_ID = "pack_media_playback_channel"
 		private const val NOTIFICATION_ID = 2
 		const val ACTION_STOP = "r3.graffiti.ACTION_STOP_PACK_SERVICE"
+		const val EXTRA_RESUME_ONLY = "r3.graffiti.EXTRA_RESUME_ONLY"
 	}
 
 	override fun onBind(intent: Intent?): IBinder? = null
@@ -54,7 +55,11 @@ class PackMediaPlaybackService : Service() {
 		if (pack != null) {
 			val notification = createNotification()
 			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-				startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+				startForeground(
+					NOTIFICATION_ID,
+					notification,
+					ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+				)
 			} else {
 				startForeground(NOTIFICATION_ID, notification)
 			}
@@ -131,12 +136,23 @@ class PackMediaPlaybackService : Service() {
 			stopIntent,
 			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 		)
+		val resumeIntent = Intent(this, PackViewActivity::class.java).apply {
+			addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+			putExtra(EXTRA_RESUME_ONLY, true)
+		}
+		val resumePendingIntent = PendingIntent.getActivity(
+			this,
+			1,
+			resumeIntent,
+			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+		)
 		val packName = PackHolder.currentPackName
 
 		return NotificationCompat.Builder(this, CHANNEL_ID)
 			.setContentTitle("Pack Viewer: $packName")
 			.setContentText("Serving pack media content...")
 			.setSmallIcon(android.R.drawable.ic_media_play)
+			.setContentIntent(resumePendingIntent)
 			.setPriority(NotificationCompat.PRIORITY_LOW)
 			.setOngoing(true)
 			.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)

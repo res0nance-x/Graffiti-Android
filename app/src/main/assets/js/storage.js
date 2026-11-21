@@ -249,8 +249,36 @@ void loadAppVersion();
 // Reload storage info and version when entering Settings tab
 onSectionShow('section-settings', async () => {
     updateBatterySettingsUi();
-    await Promise.all([loadStorageInfo(), loadAppVersion()]);
+    await Promise.all([loadStorageInfo(), loadAppVersion(), loadAndroidPackViewerSettings()]);
 });
+async function loadAndroidPackViewerSettings() {
+    const card = document.getElementById('settings-card-android-pack-viewer');
+    const toggle = document.getElementById('settings-pack-allow-external-links');
+    if (!card || !toggle || !window.Android)
+        return;
+    card.hidden = false;
+    try {
+        const stored = await graffiti.getStore('graffiti:pack-allow-external-links');
+        toggle.checked = stored === 'true';
+    }
+    catch (e) {
+        console.warn('Failed to load pack external links setting:', e);
+    }
+}
+const packAllowExternalLinksToggle = document.getElementById('settings-pack-allow-external-links');
+if (packAllowExternalLinksToggle) {
+    packAllowExternalLinksToggle.addEventListener('change', async () => {
+        const enabled = packAllowExternalLinksToggle.checked;
+        try {
+            await graffiti.setStore('graffiti:pack-allow-external-links', enabled ? 'true' : 'false');
+        }
+        catch (e) {
+            packAllowExternalLinksToggle.checked = !enabled;
+            alert(`Failed to save setting: ${e.message}`);
+        }
+    });
+}
+void loadAndroidPackViewerSettings();
 function updateBatterySettingsUi() {
     const card = document.getElementById('settings-card-android-battery');
     if (!card || !window.Android?.openBatterySettings)

@@ -2,7 +2,10 @@ package r3.graffiti
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -12,7 +15,10 @@ import android.view.ContextMenu
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -21,6 +27,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -43,20 +50,37 @@ import r3.pack.ZipPack
 import r3.pke.Password256
 import r3.source.FileSource
 import r3.source.Source
+import java.io.ByteArrayInputStream
 import java.io.File
 import kotlin.time.Duration.Companion.milliseconds
 
 class PackViewActivity : ComponentActivity() {
+	companion object {
+		private const val PACK_MEDIA_BRIDGE_NAME = "__GraffitiPackMedia"
+	}
+
+	private inner class PackMediaBridge {
+		@JavascriptInterface
+		fun setMediaPlaying(playing: Boolean) {
+			runOnUiThread {
+				if (::webView.isInitialized) {
+					webView.setKeepAliveInBackground(playing)
+				}
+			}
+		}
+	}
+
 	private var intentUri: Uri? = null
 	private var intentFilePath: String? = null
 	private lateinit var rootLayout: FrameLayout
 	private lateinit var loadingLayout: LinearLayout
 	private lateinit var errorLayout: LinearLayout
 	private lateinit var errorTextView: TextView
-	private lateinit var webView: WebView
+	private lateinit var webView: BackgroundMediaWebView
 	private var customView: View? = null
 	private var customViewCallback: WebChromeClient.CustomViewCallback? = null
-	private var customViewContainer: FrameLayout? = null
+	private var customViewContainer: BackgroundMediaFrameLayout? = null
+	private var lastBlockedToastMs: Long = 0L
 	private val isDarkMode = isGraffitiDarkTheme()
 	override fun onCreate(savedInstanceState: Bundle?) {
 		enableEdgeToEdge()
@@ -79,8 +103,14 @@ class PackViewActivity : ComponentActivity() {
 	override fun onPause() {
 		super.onPause()
 		if (::webView.isInitialized) {
+			if (customView != null && webView.keepAliveInBackground) {
+				webView.evaluateJavascript(BackgroundMediaWebView.CAPTURE_AND_RESUME_AFTER_FULLSCREEN_JS, null)
+				val cb = customViewCallback
+				customViewCallback = null
+				cb?.onCustomViewHidden()
+			}
 			webView.evaluateJavascript(
-				"if (typeof onHostPause === 'function') onHostPause(); else { document.querySelectorAll('video').forEach(v => v.pause()); }",
+				"if (typeof onHostPause === 'function') onHostPause();",
 				null
 			)
 		}
@@ -88,6 +118,13 @@ class PackViewActivity : ComponentActivity() {
 
 	override fun onNewIntent(intent: Intent) {
 		super.onNewIntent(intent)
+		setIntent(intent)
+		if (intent.getBooleanExtra(PackMediaPlaybackService.EXTRA_RESUME_ONLY, false) &&
+			::webView.isInitialized &&
+			webView.visibility == View.VISIBLE
+		) {
+			return
+		}
 		handleIntent(intent)
 		initiatePackLoad()
 	}
@@ -181,7 +218,7 @@ class PackViewActivity : ComponentActivity() {
 		}
 		rootLayout.addView(errorLayout)
 
-		webView = WebView(this).apply {
+		webView = BackgroundMediaWebView(this).apply {
 			layoutParams = FrameLayout.LayoutParams(
 				FrameLayout.LayoutParams.MATCH_PARENT,
 				FrameLayout.LayoutParams.MATCH_PARENT
@@ -190,6 +227,7 @@ class PackViewActivity : ComponentActivity() {
 			visibility = View.GONE
 			settings.apply {
 				javaScriptEnabled = true
+				javaScriptCanOpenWindowsAutomatically = false
 				allowFileAccess = true
 				domStorageEnabled = true
 				mediaPlaybackRequiresUserGesture = false
@@ -203,19 +241,71 @@ class PackViewActivity : ComponentActivity() {
 				// Dark mode
 				isAlgorithmicDarkeningAllowed = isDarkMode
 			}
+			addJavascriptInterface(PackMediaBridge(), PACK_MEDIA_BRIDGE_NAME)
 
 			webViewClient = object : WebViewClient() {
+				override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+					super.onPageStarted(view, url, favicon)
+					(view as? BackgroundMediaWebView)?.setKeepAliveInBackground(false)
+				}
+
 				override fun onPageFinished(view: WebView?, url: String?) {
 					super.onPageFinished(view, url)
 					applyPageEnhancements()
+					view?.evaluateJavascript(
+						BackgroundMediaWebView.buildMediaTrackerJs(PACK_MEDIA_BRIDGE_NAME),
+						null
+					)
+				}
+
+				override fun shouldInterceptRequest(
+					view: WebView?,
+					request: WebResourceRequest?
+				): WebResourceResponse? {
+					val url = request?.url?.toString()
+					if (PackUrlPolicy.isInternalPackUrl(url, PackHolder.listeningPort)) {
+						return null
+					}
+					return WebResourceResponse(
+						"text/plain",
+						"UTF-8",
+						403,
+						"External access blocked",
+						mapOf("Cache-Control" to "no-store"),
+						ByteArrayInputStream(ByteArray(0))
+					)
+				}
+
+				override fun shouldOverrideUrlLoading(
+					view: WebView?,
+					request: WebResourceRequest?
+				): Boolean {
+					val url = request?.url?.toString() ?: return true
+					if (PackUrlPolicy.isInternalPackUrl(url, PackHolder.listeningPort)) {
+						return false
+					}
+					if (request.hasGesture()) {
+						if (isPackExternalLinksEnabled()) {
+							openExternalLink(url)
+						} else {
+							showExternalLinkBlockedToast()
+						}
+					}
+					return true
 				}
 			}
 
 			webChromeClient = object : WebChromeClient() {
 				override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+					if (customView != null || view == null) {
+						callback?.onCustomViewHidden()
+						return
+					}
 					customView = view
 					customViewCallback = callback
-					customViewContainer = FrameLayout(this@PackViewActivity).apply {
+					customViewContainer = BackgroundMediaFrameLayout(this@PackViewActivity) {
+						::webView.isInitialized && webView.keepAliveInBackground
+					}.apply {
 						setBackgroundColor(Color.BLACK)
 						addView(
 							view, FrameLayout.LayoutParams(
@@ -229,10 +319,13 @@ class PackViewActivity : ComponentActivity() {
 				}
 
 				override fun onHideCustomView() {
+					if (customView == null) return
 					customViewContainer?.let { rootLayout.removeView(it) }
 					customViewContainer = null
 					customView = null
+					val cb = customViewCallback
 					customViewCallback = null
+					cb?.onCustomViewHidden()
 					webView.visibility = View.VISIBLE
 				}
 			}
@@ -262,25 +355,48 @@ class PackViewActivity : ComponentActivity() {
 		super.onCreateContextMenu(menu, v, menuInfo)
 		if (v == webView) {
 			val result = webView.hitTestResult
-			val extra = result.extra
+			val extra = result.extra ?: return
+			val isInternal = PackUrlPolicy.isInternalPackUrl(extra, PackHolder.listeningPort)
 			when (result.type) {
 				WebView.HitTestResult.IMAGE_TYPE,
 				WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
-					if (extra != null) {
-						menu.setHeaderTitle(extra.substringAfterLast('/'))
+					menu.setHeaderTitle(extra.substringAfterLast('/'))
+					if (isInternal) {
 						menu.add(0, 1, 0, "View Image").setOnMenuItemClickListener {
 							webView.loadUrl(extra)
 							true
+						}
+					} else {
+						menu.add(0, 3, 0, "Copy Image URL").setOnMenuItemClickListener {
+							copyUrlToClipboard(extra)
+							true
+						}
+						if (isPackExternalLinksEnabled() && PackUrlPolicy.isOpenableExternalUrl(extra)) {
+							menu.add(0, 4, 0, "Open in Browser").setOnMenuItemClickListener {
+								openExternalLink(extra)
+								true
+							}
 						}
 					}
 				}
 
 				WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
-					if (extra != null) {
-						menu.setHeaderTitle(extra.substringAfterLast('/'))
+					menu.setHeaderTitle(extra.substringAfterLast('/'))
+					if (isInternal) {
 						menu.add(0, 2, 0, "Open Link").setOnMenuItemClickListener {
 							webView.loadUrl(extra)
 							true
+						}
+					} else {
+						menu.add(0, 3, 0, "Copy Link").setOnMenuItemClickListener {
+							copyUrlToClipboard(extra)
+							true
+						}
+						if (isPackExternalLinksEnabled() && PackUrlPolicy.isOpenableExternalUrl(extra)) {
+							menu.add(0, 4, 0, "Open in Browser").setOnMenuItemClickListener {
+								openExternalLink(extra)
+								true
+							}
 						}
 					}
 				}
@@ -491,12 +607,15 @@ class PackViewActivity : ComponentActivity() {
 			stopPlaybackService()
 		}
 		super.onDestroy()
-		webView.apply {
-			stopLoading()
-			loadUrl("about:blank")
-			onPause()
-			removeAllViews()
-			destroy()
+		if (::webView.isInitialized) {
+			webView.apply {
+				setKeepAliveInBackground(false)
+				stopLoading()
+				loadUrl("about:blank")
+				onPause()
+				removeAllViews()
+				destroy()
+			}
 		}
 	}
 
@@ -595,18 +714,58 @@ class PackViewActivity : ComponentActivity() {
 		}
 	}
 
-	private fun loadGraffitiThemeSetting(): String {
+	private fun showExternalLinkBlockedToast() {
+		val now = System.currentTimeMillis()
+		if (now - lastBlockedToastMs >= 2000L) {
+			lastBlockedToastMs = now
+			Toast.makeText(
+				this,
+				"External links in packs are disabled (enable in Settings)",
+				Toast.LENGTH_SHORT
+			).show()
+		}
+	}
+
+	private fun openExternalLink(url: String) {
+		if (!PackUrlPolicy.isOpenableExternalUrl(url)) {
+			Toast.makeText(this, "Unsupported external link", Toast.LENGTH_SHORT).show()
+			return
+		}
+		try {
+			val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+				addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+			}
+			startActivity(intent)
+		} catch (e: Exception) {
+			Toast.makeText(this, "Failed to open link: ${e.message}", Toast.LENGTH_SHORT).show()
+		}
+	}
+
+	private fun copyUrlToClipboard(url: String) {
+		val clipboard = getSystemService(ClipboardManager::class.java)
+		clipboard?.setPrimaryClip(ClipData.newPlainText("Link", url))
+		Toast.makeText(this, "Link copied", Toast.LENGTH_SHORT).show()
+	}
+
+	private fun loadGraffitiSetting(key: String): String {
 		try {
 			val graffitiDir = File(filesDir, "graffiti")
 			val settingsFile = File(graffitiDir, "settings.json")
 			if (settingsFile.exists()) {
 				val json = JSONObject(settingsFile.readText())
-				val theme = json.optString("graffiti:theme", "")
-				if (theme.isNotEmpty()) return theme
+				return json.optString(key, "")
 			}
 		} catch (_: Exception) {
 		}
-		return "dark-sage"
+		return ""
+	}
+
+	private fun isPackExternalLinksEnabled(): Boolean {
+		return loadGraffitiSetting("graffiti:pack-allow-external-links").equals("true", ignoreCase = true)
+	}
+
+	private fun loadGraffitiThemeSetting(): String {
+		return loadGraffitiSetting("graffiti:theme").ifEmpty { "dark-sage" }
 	}
 
 	private fun isGraffitiDarkTheme(): Boolean {

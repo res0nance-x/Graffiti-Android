@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -120,6 +121,13 @@ class WebViewActivity : ComponentActivity() {
 		}
 
 		@JavascriptInterface
+		fun setMediaPlaying(playing: Boolean) {
+			runOnUiThread {
+				webView?.setKeepAliveInBackground(playing)
+			}
+		}
+
+		@JavascriptInterface
 		fun openBatterySettings() {
 			runOnUiThread {
 				val powerManager = getSystemService(POWER_SERVICE) as PowerManager
@@ -187,8 +195,11 @@ class WebViewActivity : ComponentActivity() {
 		pendingDownloadUrl = null
 	}
 	private var customView: View? = null
+	private var customViewContainer: BackgroundMediaFrameLayout? = null
 	private var customViewCallback: WebChromeClient.CustomViewCallback? = null
-	private var webView: WebView? = null
+	private var webView: BackgroundMediaWebView? = null
+	private var isActivityPaused: Boolean = false
+	private var isWebViewPaused: Boolean = false
 	private lateinit var rootLayout: FrameLayout
 	private lateinit var loadingLayout: LinearLayout
 	private lateinit var entryLayout: LinearLayout
@@ -213,8 +224,12 @@ class WebViewActivity : ComponentActivity() {
 
 	override fun onResume() {
 		super.onResume()
+		isActivityPaused = false
 		GraffitiService.onScreenVisibilityChanged(true)
-		webView?.onResume()
+		if (isWebViewPaused) {
+			webView?.onResume()
+			isWebViewPaused = false
+		}
 		if (GraffitiService.port == 0 && loadingLayout.visibility != View.VISIBLE) {
 			entryLayout.visibility = View.VISIBLE
 			webView?.visibility = View.GONE
@@ -235,8 +250,19 @@ class WebViewActivity : ComponentActivity() {
 
 	override fun onPause() {
 		super.onPause()
+		isActivityPaused = true
 		GraffitiService.onScreenVisibilityChanged(false)
-		webView?.onPause()
+		if (webView?.keepAliveInBackground == true) {
+			if (customView != null) {
+				webView?.evaluateJavascript(BackgroundMediaWebView.CAPTURE_AND_RESUME_AFTER_FULLSCREEN_JS, null)
+				val cb = customViewCallback
+				customViewCallback = null
+				cb?.onCustomViewHidden()
+			}
+		} else {
+			webView?.onPause()
+			isWebViewPaused = true
+		}
 	}
 
 	override fun onNewIntent(intent: Intent) {
@@ -343,13 +369,19 @@ class WebViewActivity : ComponentActivity() {
 			addView(startButton)
 		}
 		rootLayout.addView(entryLayout)
-		val wv = WebView(this).apply {
+		val wv = BackgroundMediaWebView(this).apply {
 			layoutParams = FrameLayout.LayoutParams(
 				FrameLayout.LayoutParams.MATCH_PARENT,
 				FrameLayout.LayoutParams.MATCH_PARENT
 			)
 			setBackgroundColor(Color.BLACK)
 			visibility = View.GONE
+			onBackgroundMediaStopped = {
+				if (isActivityPaused && !isWebViewPaused) {
+					this@WebViewActivity.webView?.onPause()
+					isWebViewPaused = true
+				}
+			}
 			settings.apply {
 				javaScriptEnabled = true
 				domStorageEnabled = true
@@ -361,7 +393,17 @@ class WebViewActivity : ComponentActivity() {
 
 			clearCache(true)
 			addJavascriptInterface(AndroidBridge(), "Android")
-			webViewClient = WebViewClient()
+			webViewClient = object : WebViewClient() {
+				override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+					super.onPageStarted(view, url, favicon)
+					(view as? BackgroundMediaWebView)?.setKeepAliveInBackground(false)
+				}
+
+				override fun onPageFinished(view: WebView?, url: String?) {
+					super.onPageFinished(view, url)
+					view?.evaluateJavascript(BackgroundMediaWebView.buildMediaTrackerJs("Android"), null)
+				}
+			}
 			webChromeClient = object : WebChromeClient() {
 				override fun onShowFileChooser(
 					webView: WebView?,
@@ -379,15 +421,28 @@ class WebViewActivity : ComponentActivity() {
 				}
 
 				override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-					if (customView != null) {
+					if (customView != null || view == null) {
 						callback?.onCustomViewHidden()
 						return
 					}
 					customView = view
 					customViewCallback = callback
+					val container = BackgroundMediaFrameLayout(this@WebViewActivity) {
+						this@WebViewActivity.webView?.keepAliveInBackground == true
+					}.apply {
+						setBackgroundColor(Color.BLACK)
+						addView(
+							view,
+							FrameLayout.LayoutParams(
+								FrameLayout.LayoutParams.MATCH_PARENT,
+								FrameLayout.LayoutParams.MATCH_PARENT
+							)
+						)
+					}
+					customViewContainer = container
 					val decorView = window.decorView as FrameLayout
 					decorView.addView(
-						view,
+						container,
 						FrameLayout.LayoutParams(
 							FrameLayout.LayoutParams.MATCH_PARENT,
 							FrameLayout.LayoutParams.MATCH_PARENT
@@ -405,9 +460,12 @@ class WebViewActivity : ComponentActivity() {
 				override fun onHideCustomView() {
 					if (customView == null) return
 					val decorView = window.decorView as FrameLayout
-					decorView.removeView(customView)
+					customViewContainer?.let { decorView.removeView(it) }
+					customViewContainer = null
 					customView = null
-					customViewCallback?.onCustomViewHidden()
+					val cb = customViewCallback
+					customViewCallback = null
+					cb?.onCustomViewHidden()
 
 					this@WebViewActivity.webView?.visibility = View.VISIBLE
 
@@ -477,6 +535,7 @@ class WebViewActivity : ComponentActivity() {
 			action = GraffitiService.ACTION_STOP_SERVICE
 		}
 		startService(intent)
+		webView?.setKeepAliveInBackground(false)
 		loadingLayout.visibility = View.GONE
 		webView?.visibility = View.GONE
 		webView?.loadUrl("about:blank")
@@ -638,6 +697,7 @@ class WebViewActivity : ComponentActivity() {
 	override fun onDestroy() {
 		super.onDestroy()
 		webView?.apply {
+			setKeepAliveInBackground(false)
 			stopLoading()
 			loadUrl("about:blank")
 			onPause()
