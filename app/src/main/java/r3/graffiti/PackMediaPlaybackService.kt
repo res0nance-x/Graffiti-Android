@@ -11,10 +11,13 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import r3.content.BinaryContent
+import r3.content.Content
 import r3.http.ContentHandler
 import r3.http.HandlerFactory
 import r3.http.WebServer
+import r3.org.json.JSONObject
 import r3.pack.Pack
+import org.nanohttpd.protocols.http.response.Response
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -37,6 +40,10 @@ class PackMediaPlaybackService : Service() {
 		private const val NOTIFICATION_ID = 2
 		const val ACTION_STOP = "r3.graffiti.ACTION_STOP_PACK_SERVICE"
 		const val EXTRA_RESUME_ONLY = "r3.graffiti.EXTRA_RESUME_ONLY"
+		const val PACK_VIEWER_PATH = "/__pack_viewer__"
+		const val PACK_VIEWER_INFO_PATH = "/__pack_viewer_info__"
+		private const val PACK_VIEWER_CSP =
+			"default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self';"
 	}
 
 	override fun onBind(intent: Intent?): IBinder? = null
@@ -81,6 +88,20 @@ class PackMediaPlaybackService : Service() {
 		stopSelf()
 	}
 
+	private fun loadViewerHtmlContent(): BinaryContent? {
+		return try {
+			val bytes = assets.open("playlist/index.html").use { it.readBytes() }
+			BinaryContent(bytes, "index.html", "html")
+		} catch (_: Exception) {
+			try {
+				val bytes = assets.open("index.html").use { it.readBytes() }
+				BinaryContent(bytes, "index.html", "html")
+			} catch (_: Exception) {
+				null
+			}
+		}
+	}
+
 	private fun startWebServer(pack: Pack) {
 		try {
 			webServer?.stop()
@@ -92,22 +113,31 @@ class PackMediaPlaybackService : Service() {
 		}
 		val ws = WebServer("localhost", 0, tmpDir)
 		ws.handlers.add(HandlerFactory.createLogRouter(errorsOnly = true))
+		ws.handlers.add(object : ContentHandler {
+			override fun handle(header: JSONObject, content: Content?): Content? {
+				val path = header.optString("path", "")
+				return when (path) {
+					PACK_VIEWER_PATH -> loadViewerHtmlContent()
+					PACK_VIEWER_INFO_PATH -> {
+						val info = JSONObject().put("name", PackHolder.currentPackName)
+						BinaryContent(info.toString().toByteArray(Charsets.UTF_8), "pack_info.json", "json")
+					}
+					else -> null
+				}
+			}
+
+			override fun onResponse(header: JSONObject, response: Response) {
+				if (header.optString("path", "") == PACK_VIEWER_PATH) {
+					response.addHeader("Content-Security-Policy", PACK_VIEWER_CSP)
+				}
+			}
+		})
 		ws.handlers.add(HandlerFactory.createWelcomeHandler())
 		ws.handlers.add(HandlerFactory.createPackHandler(pack, loose = true))
 		ws.handlers.add(ContentHandler { header, _ ->
 			val path = header.optString("path", "/")
 			if (path == "/" || path == "/index.html") {
-				try {
-					val bytes = assets.open("playlist/index.html").use { it.readBytes() }
-					BinaryContent(bytes, "index.html", "html")
-				} catch (_: Exception) {
-					try {
-						val bytes = assets.open("index.html").use { it.readBytes() }
-						BinaryContent(bytes, "index.html", "html")
-					} catch (_: Exception) {
-						null
-					}
-				}
+				loadViewerHtmlContent()
 			} else null
 		})
 

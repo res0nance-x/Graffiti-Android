@@ -3018,6 +3018,13 @@ export function renderMarkdown(raw: string): string {
          continue;
       }
 
+      // Horizontal rule (3 or more dashes on its own line: ---, ----, ---------, etc.)
+      if (/^-{3,}$/.test(line.trim())) {
+         flushAll();
+         result.push('<hr class="msg-hr">');
+         continue;
+      }
+
       // Blockquote
       const bqMatch = line.match(/^>\s?(.*)$/);
       if (bqMatch) {

@@ -3,868 +3,1344 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-	<title>Pack Media Viewer</title>
+	<meta name="graffiti-pack-viewer" content="true">
+	<title>Pack Viewer</title>
 	<style>
-       :root {
-           --bg-dark: #090d16;
-           --panel-bg: #111827;
-           --card-bg: #1f2937;
-           --accent: #38bdf8;
-           --accent-hover: #0284c7;
-           --accent-glow: rgba(56, 189, 248, 0.25);
-           --text-main: #f9fafb;
-           --text-muted: #9ca3af;
-           --border-color: #1f2937;
-           --active-item-bg: #1e3a5f;
-           --active-item-border: #38bdf8;
-       }
-
-       * {
-           box-sizing: border-box;
-           margin: 0;
-           padding: 0;
-       }
-
-       html, body {
-           height: 100%;
-           width: 100%;
-           overflow: hidden;
-           background-color: var(--bg-dark);
-           color: var(--text-main);
-           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-       }
-
-       .app-container {
-           display: flex;
-           flex-direction: column;
-           width: 100%;
-           height: 100%;
-       }
-
-       /* Header */
-       .viewport-header {
-           height: 56px;
-           padding: 0 1rem;
-           display: flex;
-           align-items: center;
-           justify-content: space-between;
-           background-color: var(--panel-bg);
-           border-bottom: 1px solid var(--border-color);
-           z-index: 10;
-       }
-
-       .item-title-container {
-           display: flex;
-           align-items: center;
-           gap: 0.5rem;
-           overflow: hidden;
-           flex: 1;
-       }
-
-       .item-title {
-           font-size: 0.95rem;
-           font-weight: 600;
-           white-space: nowrap;
-           overflow: hidden;
-           text-overflow: ellipsis;
-           color: var(--text-main);
-       }
-
-       .item-type-badge {
-           padding: 0.2rem 0.4rem;
-           border-radius: 4px;
-           font-size: 0.65rem;
-           font-weight: 700;
-           text-transform: uppercase;
-           background: var(--card-bg);
-           color: var(--accent);
-           border: 1px solid var(--border-color);
-           flex-shrink: 0;
-       }
-
-       .header-actions {
-           display: flex;
-           align-items: center;
-           gap: 0.75rem;
-       }
-
-       .toggle-label {
-           display: flex;
-           align-items: center;
-           gap: 0.4rem;
-           font-size: 0.75rem;
-           color: var(--text-muted);
-           cursor: pointer;
-           user-select: none;
-       }
-
-       .toggle-label input[type="checkbox"] {
-           accent-color: var(--accent);
-           width: 14px;
-           height: 14px;
-           cursor: pointer;
-       }
-
-       /* Stage Display */
-       .stage {
-           flex: 1;
-           display: flex;
-           align-items: center;
-           justify-content: center;
-           position: relative;
-           overflow: hidden;
-           background: radial-gradient(circle at center, #0f172a 0%, #030712 100%);
-       }
-
-       .media-element {
-           max-width: 100%;
-           max-height: 100%;
-           object-fit: contain;
-           box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-       }
-
-       video.media-element {
-           width: 100%;
-           height: 100%;
-           background: #000;
-       }
-
-       .audio-card {
-           display: flex;
-           flex-direction: column;
-           align-items: center;
-           justify-content: center;
-           padding: 2.25rem 2rem;
-           background: var(--panel-bg);
-           border-radius: 16px;
-           border: 1px solid var(--border-color);
-           box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
-           width: 92%;
-           max-width: 680px;
-           text-align: center;
-       }
-
-       .audio-card .audio-file-name {
-           font-weight: 600;
-           font-size: 1.15rem;
-           color: #fff;
-           word-break: break-all;
-           margin-bottom: 1.25rem;
-           text-align: center;
-           width: 100%;
-       }
-
-       .audio-card audio {
-           display: none;
-       }
-
-       /* ── Custom Touch-Friendly Audio Player ──────────────────────────── */
-       .custom-audio-player {
-           display: flex;
-           flex-direction: column;
-           width: 100%;
-           max-width: 640px;
-           padding: 0.75rem 1rem;
-           margin: 0.5rem auto 0;
-           background: var(--card-bg);
-           border: 1px solid var(--border-color);
-           border-radius: 12px;
-           box-sizing: border-box;
-           user-select: none;
-           transition: border-color 0.2s, background-color 0.2s;
-       }
-
-       .custom-audio-player.is-playing {
-           border-color: var(--accent);
-       }
-
-       .audio-controls-row {
-           display: flex;
-           align-items: center;
-           gap: 0.5rem;
-           width: 100%;
-       }
-
-       .audio-btn {
-           display: inline-flex;
-           align-items: center;
-           justify-content: center;
-           background: transparent;
-           border: none;
-           color: var(--text-main);
-           cursor: pointer;
-           border-radius: 50%;
-           padding: 0;
-           transition: background-color 0.15s, transform 0.1s, color 0.15s;
-           touch-action: manipulation;
-       }
-
-       .audio-btn:hover {
-           color: var(--accent);
-           background: rgba(255, 255, 255, 0.08);
-       }
-
-       .audio-btn:active {
-           transform: scale(0.92);
-       }
-
-       .audio-btn-play {
-           width: 38px;
-           height: 38px;
-           min-width: 38px;
-           min-height: 38px;
-           background: var(--accent);
-           color: #000;
-           box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-       }
-
-       .audio-btn-play:hover {
-           background: var(--accent-hover);
-           color: #fff;
-       }
-
-       .audio-btn-skip {
-           width: 34px;
-           height: 34px;
-           min-width: 34px;
-           min-height: 34px;
-           opacity: 0.85;
-       }
-
-       .audio-btn-skip:hover {
-           opacity: 1;
-       }
-
-       .audio-time-display {
-           display: flex;
-           align-items: center;
-           gap: 0.25rem;
-           font-size: 0.82rem;
-           font-variant-numeric: tabular-nums;
-           color: var(--text-main);
-           opacity: 0.9;
-           margin-left: auto;
-           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-           white-space: nowrap;
-       }
-
-       .audio-time-sep {
-           opacity: 0.5;
-       }
-
-       .audio-btn-speed {
-           padding: 0.2rem 0.45rem;
-           border-radius: 6px;
-           font-size: 0.75rem;
-           font-weight: 700;
-           color: var(--text-main);
-           background: rgba(255, 255, 255, 0.07);
-           border: 1px solid var(--border-color);
-           min-width: 32px;
-           height: 26px;
-           letter-spacing: 0.02em;
-       }
-
-       .audio-btn-speed:hover {
-           border-color: var(--accent);
-           color: var(--accent);
-       }
-
-       .audio-seek-row {
-           width: 100%;
-           margin-top: 0.35rem;
-           display: flex;
-           align-items: center;
-       }
-
-       /* Full-width touch-friendly range slider */
-       .audio-seek-slider {
-           -webkit-appearance: none;
-           appearance: none;
-           width: 100%;
-           height: 32px;
-           background: transparent;
-           cursor: pointer;
-           margin: 0;
-           padding: 0;
-           touch-action: none;
-       }
-
-       .audio-seek-slider:focus {
-           outline: none;
-       }
-
-       .audio-seek-slider::-webkit-slider-runnable-track {
-           width: 100%;
-           height: 6px;
-           border-radius: 3px;
-           background: linear-gradient(
-                   to right,
-                   var(--accent) var(--seek-pct, 0%),
-                   rgba(255, 255, 255, 0.18) var(--seek-pct, 0%)
-           );
-           transition: height 0.15s;
-       }
-
-       .audio-seek-slider::-webkit-slider-thumb {
-           -webkit-appearance: none;
-           appearance: none;
-           width: 16px;
-           height: 16px;
-           border-radius: 50%;
-           background: #ffffff;
-           margin-top: -5px;
-           box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-           transition: transform 0.15s, background-color 0.15s;
-       }
-
-       .audio-seek-slider:hover::-webkit-slider-thumb,
-       .audio-seek-slider:active::-webkit-slider-thumb {
-           transform: scale(1.25);
-           background: var(--accent);
-       }
-
-       .audio-seek-slider::-moz-range-track {
-           width: 100%;
-           height: 6px;
-           border-radius: 3px;
-           background: rgba(255, 255, 255, 0.18);
-       }
-
-       .audio-seek-slider::-moz-range-progress {
-           height: 6px;
-           border-radius: 3px;
-           background: var(--accent);
-       }
-
-       .audio-seek-slider::-moz-range-thumb {
-           width: 16px;
-           height: 16px;
-           border: none;
-           border-radius: 50%;
-           background: #ffffff;
-           box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-           transition: transform 0.15s, background-color 0.15s;
-       }
-
-       .audio-seek-slider:hover::-moz-range-thumb,
-       .audio-seek-slider:active::-moz-range-thumb {
-           transform: scale(1.25);
-           background: var(--accent);
-       }
-
-       .text-viewer {
-           width: 95%;
-           height: 90%;
-           background: var(--panel-bg);
-           border: 1px solid var(--border-color);
-           border-radius: 12px;
-           padding: 1rem;
-           overflow: auto;
-           font-family: "Fira Code", "Courier New", Courier, monospace;
-           font-size: 0.85rem;
-           line-height: 1.5;
-           color: #e2e8f0;
-           white-space: pre-wrap;
-           word-break: break-all;
-           box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-       }
-
-       .info-card {
-           display: flex;
-           flex-direction: column;
-           gap: 0.75rem;
-           padding: 1.5rem;
-           background: var(--panel-bg);
-           border-radius: 16px;
-           border: 1px solid var(--border-color);
-           width: 90%;
-           max-width: 400px;
-           box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-       }
-
-       .info-card h3 {
-           color: var(--accent);
-           font-size: 1.1rem;
-           word-break: break-all;
-       }
-
-       .info-row {
-           display: flex;
-           justify-content: space-between;
-           border-bottom: 1px solid var(--border-color);
-           padding-bottom: 0.4rem;
-           font-size: 0.8rem;
-       }
-
-       .info-label {
-           color: var(--text-muted);
-       }
-
-       .info-value {
-           color: var(--text-main);
-           font-weight: 500;
-       }
-
-       .btn-download {
-           margin-top: 0.5rem;
-           padding: 0.6rem;
-           background: var(--accent);
-           color: #000;
-           font-weight: 600;
-           text-align: center;
-           text-decoration: none;
-           border-radius: 8px;
-           transition: background 0.2s;
-           font-size: 0.9rem;
-       }
-
-       .btn-download:hover {
-           background: var(--accent-hover);
-           color: #fff;
-       }
-
-       /* Control Bar */
-       .control-bar {
-           height: 72px;
-           background: var(--panel-bg);
-           border-top: 1px solid var(--border-color);
-           display: flex;
-           flex-direction: column;
-           position: relative;
-           z-index: 10;
-       }
-
-       .timer-progress-bar-container {
-           width: 100%;
-           height: 4px;
-           background: #1f2937;
-           position: absolute;
-           top: 0;
-           left: 0;
-       }
-
-       .timer-progress-bar {
-           height: 100%;
-           width: 0%;
-           background: linear-gradient(90deg, var(--accent), #0284c7);
-           transition: width 0.1s linear;
-       }
-
-       .controls-content {
-           flex: 1;
-           display: flex;
-           align-items: center;
-           justify-content: space-between;
-           padding: 0 1rem;
-       }
-
-       .control-buttons {
-           display: flex;
-           align-items: center;
-           gap: 1rem;
-       }
-
-       .ctrl-btn {
-           background: var(--card-bg);
-           border: 1px solid var(--border-color);
-           color: var(--text-main);
-           width: 42px;
-           height: 42px;
-           border-radius: 50%;
-           display: flex;
-           align-items: center;
-           justify-content: center;
-           cursor: pointer;
-           transition: all 0.2s ease;
-       }
-
-       .ctrl-btn:hover {
-           background: var(--accent);
-           color: #000;
-           border-color: var(--accent);
-       }
-
-       .auto-play-toggle-label {
-           display: inline-flex;
-           align-items: center;
-           gap: 0.5rem;
-           font-size: 0.82rem;
-           font-weight: 600;
-           color: var(--text-main);
-           cursor: pointer;
-           user-select: none;
-           padding: 0 0.85rem;
-           background: var(--card-bg);
-           border: 1px solid var(--border-color);
-           border-radius: 21px;
-           transition: all 0.2s ease;
-           height: 42px;
-           box-sizing: border-box;
-       }
-
-       .auto-play-toggle-label:hover {
-           border-color: var(--accent);
-           color: var(--accent);
-       }
-
-       .auto-play-toggle-label.active,
-       .auto-play-toggle-label:has(input:checked) {
-           border-color: var(--accent);
-           background: rgba(56, 189, 248, 0.12);
-           color: var(--accent);
-       }
-
-       .auto-play-toggle-label input[type="checkbox"] {
-           accent-color: var(--accent);
-           width: 16px;
-           height: 16px;
-           cursor: pointer;
-           margin: 0;
-       }
-
-       .ctrl-btn svg {
-           width: 20px;
-           height: 20px;
-           fill: currentColor;
-       }
-
-       .status-info {
-           font-size: 0.8rem;
-           color: var(--text-muted);
-           display: flex;
-           align-items: center;
-           gap: 0.75rem;
-       }
-
-       .list-toggle-btn {
-           background: none;
-           border: none;
-           color: var(--text-muted);
-           display: flex;
-           align-items: center;
-           justify-content: center;
-           cursor: pointer;
-           padding: 4px;
-           border-radius: 4px;
-           transition: all 0.2s;
-       }
-
-       .list-toggle-btn:hover, .list-toggle-btn.active {
-           color: var(--accent);
-           background: var(--card-bg);
-       }
-
-       .list-toggle-btn svg {
-           width: 20px;
-           height: 20px;
-           fill: currentColor;
-       }
-
-       .raw-btn {
-           background: none;
-           border: none;
-           color: var(--text-muted);
-           display: flex;
-           align-items: center;
-           justify-content: center;
-           gap: 4px;
-           cursor: pointer;
-           padding: 4px 8px;
-           border-radius: 4px;
-           transition: all 0.2s;
-           font-size: 0.78rem;
-           font-weight: 600;
-           text-decoration: none;
-           user-select: none;
-       }
-
-       .raw-btn:hover {
-           color: var(--accent);
-           background: var(--card-bg);
-       }
-
-       .raw-btn svg {
-           width: 16px;
-           height: 16px;
-           fill: currentColor;
-       }
-
-       /* List View */
-       #listView {
-           flex: 1;
-           display: flex;
-           flex-direction: column;
-           overflow: hidden;
-           background: var(--bg-dark);
-       }
-
-       .search-container {
-           padding: 1rem;
-           background: var(--panel-bg);
-           border-bottom: 1px solid var(--border-color);
-           position: sticky;
-           top: 0;
-           z-index: 5;
-       }
-
-       .search-input {
-           width: 100%;
-           padding: 0.75rem 1rem;
-           background: var(--card-bg);
-           border: 1px solid var(--border-color);
-           border-radius: 8px;
-           color: var(--text-main);
-           font-size: 0.9rem;
-           outline: none;
-           transition: border-color 0.2s;
-       }
-
-       .search-input:focus {
-           border-color: var(--accent);
-       }
-
-       .file-list {
-           flex: 1;
-           overflow-y: auto;
-           list-style: none;
-           padding: 0.5rem 0;
-       }
-
-       .file-item {
-           padding: 0.75rem 1rem;
-           display: flex;
-           align-items: center;
-           gap: 0.75rem;
-           cursor: pointer;
-           border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-           transition: background 0.2s;
-       }
-
-       .file-item:hover {
-           background: rgba(255, 255, 255, 0.05);
-       }
-
-       .file-item.current {
-           background: var(--active-item-bg);
-           border-left: 3px solid var(--active-item-border);
-       }
-
-       .file-item-info {
-           flex: 1;
-           overflow: hidden;
-       }
-
-       .file-item-name {
-           font-size: 0.85rem;
-           font-weight: 500;
-           white-space: nowrap;
-           overflow: hidden;
-           text-overflow: ellipsis;
-           color: var(--text-main);
-       }
-
-       .file-item-meta {
-           font-size: 0.7rem;
-           color: var(--text-muted);
-           margin-top: 2px;
-       }
-
-       .file-item-type {
-           padding: 0.1rem 0.3rem;
-           border-radius: 3px;
-           font-size: 0.6rem;
-           font-weight: 700;
-           background: rgba(255, 255, 255, 0.1);
-           color: var(--text-muted);
-           text-transform: uppercase;
-       }
-
-       .file-item.current .file-item-name {
-           color: var(--accent);
-       }
-
-       .file-item-raw-btn {
-           background: transparent;
-           border: 1px solid var(--border-color);
-           color: var(--text-muted);
-           padding: 3px 8px;
-           border-radius: 4px;
-           font-size: 0.68rem;
-           font-weight: 600;
-           cursor: pointer;
-           display: inline-flex;
-           align-items: center;
-           gap: 3px;
-           text-decoration: none;
-           transition: all 0.2s;
-           flex-shrink: 0;
-       }
-
-       .file-item-raw-btn:hover {
-           color: #000;
-           background: var(--accent);
-           border-color: var(--accent);
-       }
-
-       .file-item-raw-btn svg {
-           width: 12px;
-           height: 12px;
-           fill: currentColor;
-       }
-
-       .html-stage-frame {
-           width: 100%;
-           height: 100%;
-           border: none;
-           background: #ffffff;
-       }
-
-       .center-msg {
-           color: var(--text-muted);
-           font-size: 1rem;
-           text-align: center;
-           padding: 2rem;
-       }
+		:root {
+			--bg-dark: #090d16;
+			--panel-bg: #111827;
+			--card-bg: #1f2937;
+			--card-hover: #263346;
+			--accent: #38bdf8;
+			--accent-hover: #0284c7;
+			--accent-glow: rgba(56, 189, 248, 0.2);
+			--text-main: #f9fafb;
+			--text-muted: #9ca3af;
+			--border-color: #1f2937;
+			--border-subtle: rgba(255, 255, 255, 0.08);
+			--active-item-bg: #1e3a5f;
+			--active-item-border: #38bdf8;
+		}
+
+		* {
+			box-sizing: border-box;
+			margin: 0;
+			padding: 0;
+		}
+
+		html, body {
+			height: 100%;
+			width: 100%;
+			overflow: hidden;
+			background-color: var(--bg-dark);
+			color: var(--text-main);
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+		}
+
+		.app-container {
+			display: flex;
+			flex-direction: column;
+			width: 100%;
+			height: 100%;
+			position: relative;
+		}
+
+		.view-pane {
+			display: none;
+			flex-direction: column;
+			width: 100%;
+			height: 100%;
+			overflow: hidden;
+		}
+
+		.view-pane.active {
+			display: flex;
+		}
+
+		/* Shared Header */
+		.viewport-header {
+			min-height: 56px;
+			padding: 0.5rem 0.85rem;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.65rem;
+			background-color: var(--panel-bg);
+			border-bottom: 1px solid var(--border-color);
+			z-index: 10;
+			flex-shrink: 0;
+		}
+
+		.item-title-container {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+			overflow: hidden;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.item-title {
+			font-size: 0.95rem;
+			font-weight: 600;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			color: var(--text-main);
+		}
+
+		.item-type-badge {
+			padding: 0.2rem 0.45rem;
+			border-radius: 4px;
+			font-size: 0.65rem;
+			font-weight: 700;
+			text-transform: uppercase;
+			background: var(--card-bg);
+			color: var(--accent);
+			border: 1px solid var(--border-subtle);
+			flex-shrink: 0;
+		}
+
+		.header-actions {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+			flex-shrink: 0;
+		}
+
+		.header-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 0.35rem;
+			padding: 0.4rem 0.7rem;
+			border-radius: 8px;
+			border: 1px solid var(--border-subtle);
+			background: var(--card-bg);
+			color: var(--text-main);
+			font-size: 0.8rem;
+			font-weight: 600;
+			cursor: pointer;
+			transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+			white-space: nowrap;
+			user-select: none;
+		}
+
+		.header-btn:hover {
+			border-color: var(--accent);
+			color: var(--accent);
+		}
+
+		.header-btn.primary {
+			background: rgba(56, 189, 248, 0.14);
+			border-color: rgba(56, 189, 248, 0.45);
+			color: var(--accent);
+		}
+
+		.header-btn.primary:hover {
+			background: var(--accent);
+			border-color: var(--accent);
+			color: #000;
+		}
+
+		.header-btn svg {
+			width: 16px;
+			height: 16px;
+			fill: currentColor;
+			flex-shrink: 0;
+		}
+
+		/* Loading View */
+		#loadingView {
+			align-items: center;
+			justify-content: center;
+			background: radial-gradient(circle at center, #0f172a 0%, #030712 100%);
+		}
+
+		.center-msg {
+			color: var(--text-muted);
+			font-size: 1rem;
+			text-align: center;
+			padding: 2rem;
+		}
+
+		/* Choice View */
+		#choiceView {
+			align-items: center;
+			justify-content: center;
+			padding: 1.5rem;
+			overflow-y: auto;
+			background: radial-gradient(circle at top, #13203a 0%, #090d16 60%, #030712 100%);
+		}
+
+		.choice-shell {
+			width: 100%;
+			max-width: 560px;
+			display: flex;
+			flex-direction: column;
+			gap: 1.25rem;
+			background: var(--panel-bg);
+			border: 1px solid var(--border-subtle);
+			border-radius: 18px;
+			padding: 1.5rem;
+			box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
+		}
+
+		.choice-header {
+			display: flex;
+			flex-direction: column;
+			gap: 0.35rem;
+		}
+
+		.choice-eyebrow {
+			font-size: 0.72rem;
+			font-weight: 700;
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+			color: var(--accent);
+		}
+
+		.choice-title {
+			font-size: 1.3rem;
+			font-weight: 700;
+			color: var(--text-main);
+			word-break: break-word;
+		}
+
+		.choice-stats {
+			font-size: 0.85rem;
+			color: var(--text-muted);
+		}
+
+		.choice-options {
+			display: flex;
+			flex-direction: column;
+			gap: 0.85rem;
+		}
+
+		.choice-card {
+			display: flex;
+			align-items: center;
+			gap: 1rem;
+			width: 100%;
+			padding: 1rem 1.1rem;
+			border-radius: 14px;
+			border: 1px solid var(--border-subtle);
+			background: var(--card-bg);
+			color: var(--text-main);
+			text-align: left;
+			cursor: pointer;
+			transition: transform 0.12s, border-color 0.18s, background-color 0.18s, box-shadow 0.18s;
+		}
+
+		.choice-card:hover {
+			border-color: var(--accent);
+			background: var(--card-hover);
+		}
+
+		.choice-card:active {
+			transform: scale(0.99);
+		}
+
+		.choice-card.primary {
+			border-color: rgba(56, 189, 248, 0.55);
+			background: linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(2, 132, 199, 0.08));
+			box-shadow: 0 8px 24px var(--accent-glow);
+		}
+
+		.choice-card.primary:hover {
+			border-color: var(--accent);
+			background: linear-gradient(135deg, rgba(56, 189, 248, 0.24), rgba(2, 132, 199, 0.14));
+		}
+
+		.choice-icon {
+			width: 44px;
+			height: 44px;
+			border-radius: 12px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: rgba(255, 255, 255, 0.06);
+			color: var(--accent);
+			flex-shrink: 0;
+		}
+
+		.choice-card.primary .choice-icon {
+			background: var(--accent);
+			color: #030712;
+		}
+
+		.choice-icon svg {
+			width: 24px;
+			height: 24px;
+			fill: currentColor;
+		}
+
+		.choice-body {
+			flex: 1;
+			min-width: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 0.2rem;
+		}
+
+		.choice-label {
+			font-size: 1rem;
+			font-weight: 700;
+			color: var(--text-main);
+		}
+
+		.choice-desc {
+			font-size: 0.8rem;
+			color: var(--text-muted);
+			word-break: break-word;
+		}
+
+		.choice-arrow {
+			color: var(--text-muted);
+			flex-shrink: 0;
+		}
+
+		.choice-arrow svg {
+			width: 20px;
+			height: 20px;
+			fill: currentColor;
+		}
+
+		/* Directory View */
+		#directoryView {
+			background: var(--bg-dark);
+		}
+
+		.dir-count-pill {
+			padding: 0.2rem 0.55rem;
+			border-radius: 999px;
+			font-size: 0.72rem;
+			font-weight: 600;
+			color: var(--text-muted);
+			background: var(--card-bg);
+			border: 1px solid var(--border-subtle);
+			font-variant-numeric: tabular-nums;
+			flex-shrink: 0;
+		}
+
+		.search-container {
+			padding: 0.7rem 0.85rem;
+			background: var(--panel-bg);
+			border-bottom: 1px solid var(--border-color);
+			position: sticky;
+			top: 0;
+			z-index: 5;
+			flex-shrink: 0;
+		}
+
+		.search-row {
+			display: flex;
+			align-items: center;
+			gap: 0.45rem;
+		}
+
+		.search-input-wrap {
+			position: relative;
+			flex: 1;
+			min-width: 0;
+			display: flex;
+			align-items: center;
+		}
+
+		.search-icon {
+			position: absolute;
+			left: 0.75rem;
+			width: 16px;
+			height: 16px;
+			fill: var(--text-muted);
+			pointer-events: none;
+		}
+
+		.search-input {
+			width: 100%;
+			padding: 0.62rem 2.2rem 0.62rem 2.25rem;
+			background: var(--card-bg);
+			border: 1px solid var(--border-subtle);
+			border-radius: 9px;
+			color: var(--text-main);
+			font-size: 0.88rem;
+			outline: none;
+			transition: border-color 0.2s, box-shadow 0.2s;
+		}
+
+		.search-input::placeholder {
+			color: var(--text-muted);
+			opacity: 0.78;
+		}
+
+		.search-input:focus {
+			border-color: var(--accent);
+			box-shadow: 0 0 0 2px var(--accent-glow);
+		}
+
+		.search-clear-btn {
+			position: absolute;
+			right: 0.4rem;
+			width: 26px;
+			height: 26px;
+			border-radius: 50%;
+			border: none;
+			background: rgba(255, 255, 255, 0.08);
+			color: var(--text-muted);
+			font-size: 1rem;
+			line-height: 1;
+			cursor: pointer;
+			display: none;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.search-clear-btn.visible {
+			display: inline-flex;
+		}
+
+		.search-clear-btn:hover {
+			color: var(--text-main);
+			background: rgba(255, 255, 255, 0.16);
+		}
+
+		.search-help-btn {
+			width: 34px;
+			height: 36px;
+			border-radius: 9px;
+			border: 1px solid var(--border-subtle);
+			background: var(--card-bg);
+			color: var(--text-muted);
+			font-size: 0.85rem;
+			font-weight: 700;
+			cursor: pointer;
+			flex-shrink: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			transition: border-color 0.15s, color 0.15s, background-color 0.15s;
+		}
+
+		.search-help-btn:hover,
+		.search-help-btn.active {
+			border-color: var(--accent);
+			color: var(--accent);
+			background: rgba(56, 189, 248, 0.12);
+		}
+
+		.search-help-hint {
+			display: none;
+			margin-top: 0.5rem;
+			padding: 0.5rem 0.65rem;
+			border-radius: 8px;
+			background: rgba(255, 255, 255, 0.04);
+			border: 1px solid var(--border-subtle);
+			font-size: 0.74rem;
+			line-height: 1.45;
+			color: var(--text-muted);
+		}
+
+		.search-help-hint.visible {
+			display: block;
+		}
+
+		.search-help-hint code {
+			color: var(--accent);
+			background: rgba(56, 189, 248, 0.1);
+			padding: 0.05rem 0.28rem;
+			border-radius: 4px;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+			font-size: 0.72rem;
+		}
+
+		.file-list {
+			flex: 1;
+			overflow-y: auto;
+			list-style: none;
+			padding: 0.65rem 0.75rem;
+			display: flex;
+			flex-direction: column;
+			gap: 0.5rem;
+		}
+
+		.file-card {
+			display: flex;
+			flex-direction: column;
+			gap: 0.45rem;
+			padding: 0.72rem 0.85rem;
+			background: var(--panel-bg);
+			border: 1px solid var(--border-subtle);
+			border-radius: 11px;
+			cursor: pointer;
+			transition: background-color 0.15s, border-color 0.15s;
+		}
+
+		.file-card:hover {
+			background: var(--card-bg);
+			border-color: rgba(56, 189, 248, 0.4);
+		}
+
+		.file-card.current {
+			background: var(--active-item-bg);
+			border-color: var(--active-item-border);
+		}
+
+		.file-card-main {
+			display: flex;
+			align-items: flex-start;
+			gap: 0.55rem;
+			min-width: 0;
+		}
+
+		.file-item-type {
+			padding: 0.14rem 0.38rem;
+			border-radius: 4px;
+			font-size: 0.62rem;
+			font-weight: 700;
+			background: rgba(255, 255, 255, 0.09);
+			color: var(--text-muted);
+			text-transform: uppercase;
+			flex-shrink: 0;
+			margin-top: 1px;
+		}
+
+		.file-item-type.type-image { color: #a78bfa; background: rgba(167, 139, 250, 0.14); }
+		.file-item-type.type-video { color: #f472b6; background: rgba(244, 114, 182, 0.14); }
+		.file-item-type.type-audio { color: #34d399; background: rgba(52, 211, 153, 0.14); }
+		.file-item-type.type-html  { color: #38bdf8; background: rgba(56, 189, 248, 0.14); }
+		.file-item-type.type-text  { color: #fbbf24; background: rgba(251, 191, 36, 0.14); }
+
+		.file-item-name {
+			flex: 1;
+			min-width: 0;
+			font-size: 0.88rem;
+			font-weight: 500;
+			line-height: 1.35;
+			color: var(--text-main);
+			word-break: break-word;
+		}
+
+		.file-card.current .file-item-name {
+			color: var(--accent);
+			font-weight: 600;
+		}
+
+		.file-card-meta {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.75rem;
+			padding-top: 0.42rem;
+			border-top: 1px solid rgba(255, 255, 255, 0.05);
+		}
+
+		.file-meta-stack {
+			display: flex;
+			flex-direction: column;
+			gap: 0.12rem;
+			min-width: 0;
+		}
+
+		.file-meta-size,
+		.file-meta-date {
+			font-size: 0.74rem;
+			color: var(--text-muted);
+			font-variant-numeric: tabular-nums;
+			white-space: nowrap;
+		}
+
+		.file-meta-size {
+			font-weight: 600;
+			color: #cbd5e1;
+		}
+
+		.file-meta-date {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+			font-size: 0.71rem;
+		}
+
+		.file-item-raw-btn {
+			background: transparent;
+			border: 1px solid var(--border-subtle);
+			color: var(--text-muted);
+			padding: 0.28rem 0.6rem;
+			border-radius: 6px;
+			font-size: 0.72rem;
+			font-weight: 600;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			text-decoration: none;
+			transition: all 0.15s;
+			flex-shrink: 0;
+		}
+
+		.file-item-raw-btn:hover {
+			color: #000;
+			background: var(--accent);
+			border-color: var(--accent);
+		}
+
+		.file-item-raw-btn svg {
+			width: 12px;
+			height: 12px;
+			fill: currentColor;
+		}
+
+		/* Wide viewport: show each file and all metadata as a single row */
+		@media (min-width: 640px) {
+			.file-list {
+				padding: 0.55rem 1rem;
+				gap: 0.35rem;
+			}
+
+			.file-card {
+				flex-direction: row;
+				align-items: center;
+				justify-content: space-between;
+				gap: 0.85rem;
+				padding: 0.58rem 0.85rem;
+			}
+
+			.file-card-main {
+				flex: 1;
+				align-items: center;
+				min-width: 0;
+			}
+
+			.file-item-type {
+				margin-top: 0;
+			}
+
+			.file-item-name {
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				word-break: normal;
+			}
+
+			.file-card-meta {
+				padding-top: 0;
+				border-top: none;
+				flex-shrink: 0;
+				gap: 0.85rem;
+			}
+
+			.file-meta-stack {
+				flex-direction: row;
+				align-items: center;
+				gap: 0.9rem;
+			}
+
+			.file-meta-size {
+				min-width: 70px;
+				text-align: right;
+			}
+
+			.file-meta-date {
+				min-width: 120px;
+				text-align: right;
+			}
+		}
+
+		.empty-filter-state {
+			margin: 2rem auto;
+			padding: 1.5rem;
+			max-width: 360px;
+			text-align: center;
+			color: var(--text-muted);
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 0.85rem;
+		}
+
+		/* Stage Display (Slideshow View) */
+		.stage {
+			flex: 1;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			position: relative;
+			overflow: hidden;
+			background: radial-gradient(circle at center, #0f172a 0%, #030712 100%);
+		}
+
+		.media-element {
+			max-width: 100%;
+			max-height: 100%;
+			object-fit: contain;
+			box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+		}
+
+		video.media-element {
+			width: 100%;
+			height: 100%;
+			background: #000;
+		}
+
+		.audio-card {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			padding: 2.25rem 2rem;
+			background: var(--panel-bg);
+			border-radius: 16px;
+			border: 1px solid var(--border-color);
+			box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+			width: 92%;
+			max-width: 680px;
+			text-align: center;
+		}
+
+		.audio-card .audio-file-name {
+			font-weight: 600;
+			font-size: 1.15rem;
+			color: #fff;
+			word-break: break-all;
+			margin-bottom: 1.25rem;
+			text-align: center;
+			width: 100%;
+		}
+
+		.audio-card audio {
+			display: none;
+		}
+
+		/* Custom Touch-Friendly Audio Player */
+		.custom-audio-player {
+			display: flex;
+			flex-direction: column;
+			width: 100%;
+			max-width: 640px;
+			padding: 0.75rem 1rem;
+			margin: 0.5rem auto 0;
+			background: var(--card-bg);
+			border: 1px solid var(--border-color);
+			border-radius: 12px;
+			box-sizing: border-box;
+			user-select: none;
+			transition: border-color 0.2s, background-color 0.2s;
+		}
+
+		.custom-audio-player.is-playing {
+			border-color: var(--accent);
+		}
+
+		.audio-controls-row {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+			width: 100%;
+		}
+
+		.audio-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: none;
+			color: var(--text-main);
+			cursor: pointer;
+			border-radius: 50%;
+			padding: 0;
+			transition: background-color 0.15s, transform 0.1s, color 0.15s;
+			touch-action: manipulation;
+		}
+
+		.audio-btn:hover {
+			color: var(--accent);
+			background: rgba(255, 255, 255, 0.08);
+		}
+
+		.audio-btn:active {
+			transform: scale(0.92);
+		}
+
+		.audio-btn-play {
+			width: 38px;
+			height: 38px;
+			min-width: 38px;
+			min-height: 38px;
+			background: var(--accent);
+			color: #000;
+			box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+		}
+
+		.audio-btn-play:hover {
+			background: var(--accent-hover);
+			color: #fff;
+		}
+
+		.audio-btn-skip {
+			width: 34px;
+			height: 34px;
+			min-width: 34px;
+			min-height: 34px;
+			opacity: 0.85;
+		}
+
+		.audio-btn-skip:hover {
+			opacity: 1;
+		}
+
+		.audio-time-display {
+			display: flex;
+			align-items: center;
+			gap: 0.25rem;
+			font-size: 0.82rem;
+			font-variant-numeric: tabular-nums;
+			color: var(--text-main);
+			opacity: 0.9;
+			margin-left: auto;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+			white-space: nowrap;
+		}
+
+		.audio-time-sep {
+			opacity: 0.5;
+		}
+
+		.audio-btn-speed {
+			padding: 0.2rem 0.45rem;
+			border-radius: 6px;
+			font-size: 0.75rem;
+			font-weight: 700;
+			color: var(--text-main);
+			background: rgba(255, 255, 255, 0.07);
+			border: 1px solid var(--border-color);
+			min-width: 32px;
+			height: 26px;
+			letter-spacing: 0.02em;
+		}
+
+		.audio-btn-speed:hover {
+			border-color: var(--accent);
+			color: var(--accent);
+		}
+
+		.audio-seek-row {
+			width: 100%;
+			margin-top: 0.35rem;
+			display: flex;
+			align-items: center;
+		}
+
+		.audio-seek-slider {
+			-webkit-appearance: none;
+			appearance: none;
+			width: 100%;
+			height: 32px;
+			background: transparent;
+			cursor: pointer;
+			margin: 0;
+			padding: 0;
+			touch-action: none;
+		}
+
+		.audio-seek-slider:focus {
+			outline: none;
+		}
+
+		.audio-seek-slider::-webkit-slider-runnable-track {
+			width: 100%;
+			height: 6px;
+			border-radius: 3px;
+			background: linear-gradient(
+				to right,
+				var(--accent) var(--seek-pct, 0%),
+				rgba(255, 255, 255, 0.18) var(--seek-pct, 0%)
+			);
+			transition: height 0.15s;
+		}
+
+		.audio-seek-slider::-webkit-slider-thumb {
+			-webkit-appearance: none;
+			appearance: none;
+			width: 16px;
+			height: 16px;
+			border-radius: 50%;
+			background: #ffffff;
+			margin-top: -5px;
+			box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+			transition: transform 0.15s, background-color 0.15s;
+		}
+
+		.audio-seek-slider:hover::-webkit-slider-thumb,
+		.audio-seek-slider:active::-webkit-slider-thumb {
+			transform: scale(1.25);
+			background: var(--accent);
+		}
+
+		.audio-seek-slider::-moz-range-track {
+			width: 100%;
+			height: 6px;
+			border-radius: 3px;
+			background: rgba(255, 255, 255, 0.18);
+		}
+
+		.audio-seek-slider::-moz-range-progress {
+			height: 6px;
+			border-radius: 3px;
+			background: var(--accent);
+		}
+
+		.audio-seek-slider::-moz-range-thumb {
+			width: 16px;
+			height: 16px;
+			border: none;
+			border-radius: 50%;
+			background: #ffffff;
+			box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+			transition: transform 0.15s, background-color 0.15s;
+		}
+
+		.audio-seek-slider:hover::-moz-range-thumb,
+		.audio-seek-slider:active::-moz-range-thumb {
+			transform: scale(1.25);
+			background: var(--accent);
+		}
+
+		.text-viewer {
+			width: 95%;
+			height: 90%;
+			background: var(--panel-bg);
+			border: 1px solid var(--border-color);
+			border-radius: 12px;
+			padding: 1rem;
+			overflow: auto;
+			font-family: "Fira Code", "Courier New", Courier, monospace;
+			font-size: 0.85rem;
+			line-height: 1.5;
+			color: #e2e8f0;
+			white-space: pre-wrap;
+			word-break: break-all;
+			box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+		}
+
+		.info-card {
+			display: flex;
+			flex-direction: column;
+			gap: 0.75rem;
+			padding: 1.5rem;
+			background: var(--panel-bg);
+			border-radius: 16px;
+			border: 1px solid var(--border-color);
+			width: 90%;
+			max-width: 420px;
+			box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+		}
+
+		.info-card h3 {
+			color: var(--accent);
+			font-size: 1.05rem;
+			word-break: break-all;
+		}
+
+		.info-row {
+			display: flex;
+			justify-content: space-between;
+			gap: 0.75rem;
+			border-bottom: 1px solid var(--border-color);
+			padding-bottom: 0.4rem;
+			font-size: 0.8rem;
+		}
+
+		.info-label {
+			color: var(--text-muted);
+		}
+
+		.info-value {
+			color: var(--text-main);
+			font-weight: 500;
+			text-align: right;
+		}
+
+		.btn-download {
+			margin-top: 0.5rem;
+			padding: 0.6rem;
+			background: var(--accent);
+			color: #000;
+			font-weight: 600;
+			text-align: center;
+			text-decoration: none;
+			border-radius: 8px;
+			transition: background 0.2s;
+			font-size: 0.9rem;
+		}
+
+		.btn-download:hover {
+			background: var(--accent-hover);
+			color: #fff;
+		}
+
+		.html-stage-frame {
+			width: 100%;
+			height: 100%;
+			border: none;
+			background: #ffffff;
+		}
+
+		/* Control Bar */
+		.control-bar {
+			height: 72px;
+			background: var(--panel-bg);
+			border-top: 1px solid var(--border-color);
+			display: flex;
+			flex-direction: column;
+			position: relative;
+			z-index: 10;
+			flex-shrink: 0;
+		}
+
+		.timer-progress-bar-container {
+			width: 100%;
+			height: 4px;
+			background: #1f2937;
+			position: absolute;
+			top: 0;
+			left: 0;
+		}
+
+		.timer-progress-bar {
+			height: 100%;
+			width: 0%;
+			background: linear-gradient(90deg, var(--accent), #0284c7);
+			transition: width 0.1s linear;
+		}
+
+		.controls-content {
+			flex: 1;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 0 0.85rem;
+			gap: 0.5rem;
+		}
+
+		.control-buttons {
+			display: flex;
+			align-items: center;
+			gap: 0.65rem;
+		}
+
+		.ctrl-btn {
+			background: var(--card-bg);
+			border: 1px solid var(--border-color);
+			color: var(--text-main);
+			width: 42px;
+			height: 42px;
+			border-radius: 50%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			cursor: pointer;
+			transition: all 0.2s ease;
+			flex-shrink: 0;
+		}
+
+		.ctrl-btn:hover {
+			background: var(--accent);
+			color: #000;
+			border-color: var(--accent);
+		}
+
+		.auto-play-toggle-label {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.45rem;
+			font-size: 0.82rem;
+			font-weight: 600;
+			color: var(--text-main);
+			cursor: pointer;
+			user-select: none;
+			padding: 0 0.8rem;
+			background: var(--card-bg);
+			border: 1px solid var(--border-color);
+			border-radius: 21px;
+			transition: all 0.2s ease;
+			height: 42px;
+			box-sizing: border-box;
+			white-space: nowrap;
+		}
+
+		.auto-play-toggle-label:hover {
+			border-color: var(--accent);
+			color: var(--accent);
+		}
+
+		.auto-play-toggle-label.active,
+		.auto-play-toggle-label:has(input:checked) {
+			border-color: var(--accent);
+			background: rgba(56, 189, 248, 0.12);
+			color: var(--accent);
+		}
+
+		.auto-play-toggle-label input[type="checkbox"] {
+			accent-color: var(--accent);
+			width: 16px;
+			height: 16px;
+			cursor: pointer;
+			margin: 0;
+		}
+
+		.ctrl-btn svg {
+			width: 20px;
+			height: 20px;
+			fill: currentColor;
+		}
+
+		.status-info {
+			font-size: 0.8rem;
+			color: var(--text-muted);
+			display: flex;
+			align-items: center;
+			gap: 0.55rem;
+			font-variant-numeric: tabular-nums;
+			flex-shrink: 0;
+		}
+
+		.raw-btn {
+			background: transparent;
+			border: 1px solid var(--border-subtle);
+			color: var(--text-muted);
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 4px;
+			cursor: pointer;
+			padding: 6px 10px;
+			border-radius: 6px;
+			transition: all 0.2s;
+			font-size: 0.78rem;
+			font-weight: 600;
+			text-decoration: none;
+			user-select: none;
+		}
+
+		.raw-btn:hover {
+			color: #000;
+			background: var(--accent);
+			border-color: var(--accent);
+		}
+
+		.raw-btn svg {
+			width: 15px;
+			height: 15px;
+			fill: currentColor;
+		}
+
+		@media (max-width: 440px) {
+			.controls-content {
+				padding: 0 0.55rem;
+			}
+			.control-buttons {
+				gap: 0.4rem;
+			}
+			.ctrl-btn {
+				width: 38px;
+				height: 38px;
+			}
+			.auto-play-toggle-label {
+				height: 38px;
+				padding: 0 0.6rem;
+				font-size: 0.76rem;
+			}
+			.status-info {
+				gap: 0.35rem;
+				font-size: 0.75rem;
+			}
+			.raw-btn {
+				padding: 5px 8px;
+				font-size: 0.74rem;
+			}
+		}
 	</style>
 </head>
 <body>
 
 <div class="app-container">
-	<!-- Header -->
-	<header class="viewport-header">
-		<div class="item-title-container">
-			<span class="item-type-badge" id="typeBadge">-</span>
-			<span class="item-title" id="itemTitle">Loading...</span>
-		</div>
-		<div class="header-actions"></div>
-	</header>
-
-	<!-- Stage Area -->
-	<main class="stage" id="stage">
+	<!-- Loading / Error View -->
+	<section class="view-pane active" id="loadingView">
 		<div class="center-msg" id="loadingMsg">Loading archive...</div>
-	</main>
+	</section>
 
-	<!-- List View -->
-	<section id="listView" style="display: none;">
+	<!-- Choice View (shown when website entry is detected) -->
+	<section class="view-pane" id="choiceView">
+		<div class="choice-shell">
+			<div class="choice-header">
+				<div class="choice-eyebrow">Website Detected</div>
+				<h1 class="choice-title" id="choicePackTitle">Pack Viewer</h1>
+				<div class="choice-stats" id="choiceStats"></div>
+			</div>
+			<div class="choice-options">
+				<button type="button" class="choice-card primary" id="choiceWebsiteBtn">
+					<span class="choice-icon">
+						<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+					</span>
+					<span class="choice-body">
+						<span class="choice-label">View as Website</span>
+						<span class="choice-desc" id="choiceWebsiteDesc">Open index.html</span>
+					</span>
+					<span class="choice-arrow">
+						<svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+					</span>
+				</button>
+				<button type="button" class="choice-card" id="choiceDirectoryBtn">
+					<span class="choice-icon">
+						<svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+					</span>
+					<span class="choice-body">
+						<span class="choice-label">Directory View</span>
+						<span class="choice-desc">Browse, filter &amp; play raw files</span>
+					</span>
+					<span class="choice-arrow">
+						<svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+					</span>
+				</button>
+			</div>
+		</div>
+	</section>
+
+	<!-- Directory View -->
+	<section class="view-pane" id="directoryView">
+		<header class="viewport-header">
+			<div class="item-title-container">
+				<span class="item-title" id="dirTitle">Files</span>
+				<span class="dir-count-pill" id="dirCountBadge">0 files</span>
+			</div>
+			<div class="header-actions">
+				<button type="button" class="header-btn primary" id="dirWebsiteBtn" style="display: none;" title="View as Website">
+					<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+					<span>View as Website</span>
+				</button>
+			</div>
+		</header>
 		<div class="search-container">
-			<input type="text" id="searchInput" class="search-input" placeholder="Search files..." autocomplete="off">
+			<div class="search-row">
+				<div class="search-input-wrap">
+					<svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+					<input type="search" id="searchInput" class="search-input" placeholder="Search (e.g. sparkle .mp3 size>1mb date>2025-01)" autocomplete="off" spellcheck="false">
+					<button type="button" class="search-clear-btn" id="searchClearBtn" title="Clear search" aria-label="Clear search">&times;</button>
+				</div>
+				<button type="button" class="search-help-btn" id="searchHelpBtn" title="Filter syntax help" aria-label="Filter syntax help">?</button>
+			</div>
+			<div class="search-help-hint" id="searchHelpHint">
+				AND keywords · <code>"quoted phrase"</code> · <code>size&lt;</code> / <code>size&gt;</code> (<code>B</code>, <code>KB</code>, <code>MB</code>, <code>GB</code>) · <code>date&lt;</code> / <code>date&gt;</code> (<code>YYYY-MM-DD</code>, <code>today</code>, <code>7d</code>, <code>24h</code>)
+			</div>
 		</div>
 		<ul id="fileList" class="file-list">
-			<!-- Items injected via JS -->
+			<!-- File cards injected via JS -->
 		</ul>
 	</section>
 
-	<!-- Control Bar -->
-	<footer class="control-bar">
-		<div class="timer-progress-bar-container">
-			<div class="timer-progress-bar" id="progressBar"></div>
-		</div>
-		<div class="controls-content">
-			<div class="control-buttons">
-				<button class="ctrl-btn" id="prevBtn" title="Previous (Left Arrow)">
-					<svg viewBox="0 0 24 24">
-						<path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
-					</svg>
+	<!-- Slideshow View -->
+	<section class="view-pane" id="slideshowView">
+		<header class="viewport-header">
+			<div class="item-title-container">
+				<button type="button" class="header-btn" id="backToDirBtn" title="Back to Directory (Esc)">
+					<svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+					<span>Back</span>
 				</button>
-				<label class="auto-play-toggle-label" for="autoPlayToggle" title="Auto-play Slideshow (Space)">
-					<input type="checkbox" id="autoPlayToggle" autocomplete="off">
-					<span>Auto-play</span>
-				</label>
-				<button class="ctrl-btn" id="nextBtn" title="Next (Right Arrow)">
-					<svg viewBox="0 0 24 24">
-						<path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-					</svg>
-				</button>
+				<span class="item-type-badge" id="typeBadge">-</span>
+				<span class="item-title" id="itemTitle">Loading...</span>
 			</div>
-			<div class="status-info">
-				<span id="counterStatus">0 / 0</span>
-				<span id="timerStatus"></span>
-				<button class="raw-btn" id="rawBtn" title="View Raw (R)">
-					<svg viewBox="0 0 24 24">
-						<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-					</svg>
-					<span>Raw</span>
-				</button>
-				<button class="list-toggle-btn" id="listToggleBtn" title="Show/Hide File List">
-					<svg viewBox="0 0 24 24">
-						<path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
-					</svg>
-				</button>
+			<div class="header-actions"></div>
+		</header>
+
+		<main class="stage" id="stage"></main>
+
+		<footer class="control-bar">
+			<div class="timer-progress-bar-container">
+				<div class="timer-progress-bar" id="progressBar"></div>
 			</div>
-		</div>
-	</footer>
+			<div class="controls-content">
+				<div class="control-buttons">
+					<button type="button" class="ctrl-btn" id="prevBtn" title="Previous (Left Arrow)">
+						<svg viewBox="0 0 24 24">
+							<path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+						</svg>
+					</button>
+					<label class="auto-play-toggle-label" for="autoPlayToggle" title="Auto-play Slideshow (Space)">
+						<input type="checkbox" id="autoPlayToggle" autocomplete="off">
+						<span>Auto-play</span>
+					</label>
+					<button type="button" class="ctrl-btn" id="nextBtn" title="Next (Right Arrow)">
+						<svg viewBox="0 0 24 24">
+							<path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+						</svg>
+					</button>
+				</div>
+				<div class="status-info">
+					<span id="counterStatus">0 / 0</span>
+					<span id="timerStatus"></span>
+					<button type="button" class="raw-btn" id="rawBtn" title="View Raw (R)">
+						<svg viewBox="0 0 24 24">
+							<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+						</svg>
+						<span>Raw</span>
+					</button>
+				</div>
+			</div>
+		</footer>
+	</section>
 </div>
 
 <script>
 	const HOLD_DURATION = 3000;
+	const STATE_STORAGE_KEY = 'graffitiPackViewerState';
+
+	let packName = 'Pack Viewer';
+	let packSignature = '';
 	let allFiles = [];
 	let filteredFiles = [];
+	let slideshowFiles = [];
 	let currentIndex = 0;
+	let websiteEntry = null;
+	let currentView = 'loading'; // 'loading' | 'choice' | 'directory' | 'slideshow'
 	let isAutoPlay = false;
-	let isListView = false;
 	let currentMediaElement = null;
+	let lastViewedPath = null;
+	let dirScrollTop = 0;
 
 	let timerStartTime = 0;
 	let timerRemaining = HOLD_DURATION;
 	let timerAnimFrame = null;
 
-	function toggleView() {
-		isListView = !isListView;
-		const stage = document.getElementById('stage');
-		const listView = document.getElementById('listView');
-		const listBtn = document.getElementById('listToggleBtn');
-
-		if (isListView) {
-			stage.style.display = 'none';
-			listView.style.display = 'flex';
-			listBtn.classList.add('active');
-			renderFileList();
-			// Focus search input
-			setTimeout(() => document.getElementById('searchInput').focus(), 100);
-		} else {
-			stage.style.display = 'flex';
-			listView.style.display = 'none';
-			listBtn.classList.remove('active');
-		}
+	function escHtml(str) {
+		return String(str ?? '')
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
 	}
 
-	function renderFileList() {
-		const listContainer = document.getElementById('fileList');
-		const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+	function encodePathSegments(path) {
+		const clean = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+		if (!clean) return '/';
+		return '/' + clean.split('/').map(seg => encodeURIComponent(seg)).join('/');
+	}
 
-		filteredFiles = allFiles.filter(f => f.path.toLowerCase().includes(searchTerm));
+	function formatBytes(bytes) {
+		if (bytes == null || isNaN(bytes) || bytes < 0) return '—';
+		if (bytes === 0) return '0 B';
+		const k = 1024;
+		const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+		const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
+		if (i === 0) return `${bytes} B`;
+		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+	}
 
-		listContainer.innerHTML = '';
-		filteredFiles.forEach((file) => {
-			const realIndex = allFiles.indexOf(file);
-			const li = document.createElement('li');
-			li.className = `file-item ${realIndex === currentIndex ? 'current' : ''}`;
-
-			const mType = getMediaType(file);
-
-			li.innerHTML = `
-				<span class="file-item-type">${mType}</span>
-				<div class="file-item-info">
-					<div class="file-item-name">${file.path}</div>
-					<div class="file-item-meta">${formatBytes(file.length)}</div>
-				</div>
-				<button type="button" class="file-item-raw-btn" title="View Raw" onclick="event.stopPropagation(); window.location.href='${encodeURI(file.path)}';">
-					<svg viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-					Raw
-				</button>
-			`;
-
-			li.onclick = () => {
-				loadItem(realIndex);
-				toggleView(); // Go back to media view on selection
-			};
-
-			listContainer.appendChild(li);
-			if (realIndex === currentIndex && isListView) {
-				li.scrollIntoView({block: 'nearest'});
-			}
-		});
+	function formatCompactDate(epochMs) {
+		if (!epochMs || epochMs <= 0 || isNaN(epochMs)) return '—';
+		const d = new Date(epochMs);
+		if (isNaN(d.getTime())) return '—';
+		const pad = (n) => (n < 10 ? '0' + n : String(n));
+		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 	}
 
 	function getMediaType(file) {
@@ -878,20 +1354,535 @@
 		return 'binary';
 	}
 
-	function formatBytes(bytes) {
-		if (!bytes) return '0 B';
-		const k = 1024;
-		const sizes = ['B', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+	function detectWebsiteEntry(files) {
+		if (!Array.isArray(files) || files.length === 0) return null;
+		const normalized = files.map(f => ({
+			original: f.path,
+			norm: String(f.path || '').replace(/\\/g, '/').replace(/^\/+/, '')
+		}));
+
+		const rootHtml = normalized.find(item => item.norm.toLowerCase() === 'index.html');
+		if (rootHtml) return rootHtml.original;
+		const rootHtm = normalized.find(item => item.norm.toLowerCase() === 'index.htm');
+		if (rootHtm) return rootHtm.original;
+
+		let sharedDirLower = null;
+		for (const item of normalized) {
+			const slashIdx = item.norm.indexOf('/');
+			if (slashIdx <= 0) {
+				sharedDirLower = null;
+				break;
+			}
+			const topDir = item.norm.slice(0, slashIdx).toLowerCase();
+			if (sharedDirLower === null) {
+				sharedDirLower = topDir;
+			} else if (sharedDirLower !== topDir) {
+				sharedDirLower = null;
+				break;
+			}
+		}
+
+		if (sharedDirLower !== null) {
+			const targetHtml = `${sharedDirLower}/index.html`;
+			const targetHtm = `${sharedDirLower}/index.htm`;
+			const subHtml = normalized.find(item => item.norm.toLowerCase() === targetHtml);
+			if (subHtml) return subHtml.original;
+			const subHtm = normalized.find(item => item.norm.toLowerCase() === targetHtm);
+			if (subHtm) return subHtm.original;
+		}
+
+		return null;
+	}
+
+	function tokenizeSearch(query) {
+		const tokens = [];
+		const s = String(query || '').trim();
+		let i = 0;
+		while (i < s.length) {
+			while (i < s.length && /\s/.test(s[i])) i++;
+			if (i >= s.length) break;
+			let cur = '';
+			let quoted = false;
+			let quoteChar = '';
+			while (i < s.length) {
+				const ch = s[i];
+				if (quoteChar) {
+					if (ch === quoteChar) {
+						quoteChar = '';
+						i++;
+					} else {
+						cur += ch;
+						i++;
+					}
+				} else if (ch === '"' || ch === "'") {
+					quoted = true;
+					quoteChar = ch;
+					i++;
+				} else if (/\s/.test(ch)) {
+					break;
+				} else {
+					cur += ch;
+					i++;
+				}
+			}
+			if (cur.length > 0) {
+				tokens.push({ text: cur, quoted });
+			}
+		}
+
+		const merged = [];
+		for (let idx = 0; idx < tokens.length; idx++) {
+			const tok = tokens[idx];
+			if (!tok.quoted) {
+				const lower = tok.text.toLowerCase();
+				if ((lower === 'size' || lower === 'date') && idx + 1 < tokens.length && !tokens[idx + 1].quoted) {
+					const nextText = tokens[idx + 1].text;
+					if (/^(<=|>=|<|>|=)$/.test(nextText)) {
+						if (idx + 2 < tokens.length) {
+							merged.push({ text: lower + nextText + tokens[idx + 2].text, quoted: false });
+							idx += 2;
+						} else {
+							merged.push({ text: lower + nextText, quoted: false });
+							idx += 1;
+						}
+						continue;
+					}
+					const opValMatch = nextText.match(/^(<=|>=|<|>|=)(.+)$/);
+					if (opValMatch) {
+						merged.push({ text: lower + opValMatch[1] + opValMatch[2], quoted: false });
+						idx += 1;
+						continue;
+					}
+				}
+				if (/^(size|date)(<=|>=|<|>|=)$/i.test(lower)) {
+					if (idx + 1 < tokens.length) {
+						merged.push({ text: lower + tokens[idx + 1].text, quoted: false });
+						idx += 1;
+					} else {
+						merged.push({ text: lower, quoted: false });
+					}
+					continue;
+				}
+			}
+			merged.push(tok);
+		}
+		return merged;
+	}
+
+	function parseSizeBytes(rawVal) {
+		const m = String(rawVal || '').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)?$/);
+		if (!m) return null;
+		const num = parseFloat(m[1]);
+		if (!isFinite(num) || num < 0) return null;
+		const unit = m[2] || 'b';
+		const multMap = {
+			b: 1,
+			k: 1024, kb: 1024, kib: 1024,
+			m: 1024 * 1024, mb: 1024 * 1024, mib: 1024 * 1024,
+			g: 1024 * 1024 * 1024, gb: 1024 * 1024 * 1024, gib: 1024 * 1024 * 1024,
+			t: 1024 * 1024 * 1024 * 1024, tb: 1024 * 1024 * 1024 * 1024, tib: 1024 * 1024 * 1024 * 1024
+		};
+		const mult = multMap[unit];
+		return mult ? num * mult : null;
+	}
+
+	function parseDateSpec(rawVal, nowMs = Date.now()) {
+		const v = String(rawVal || '').trim().toLowerCase();
+		if (!v) return null;
+
+		const nowDate = new Date(nowMs);
+		if (v === 'today') {
+			const start = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate(), 0, 0, 0, 0).getTime();
+			const end = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate(), 23, 59, 59, 999).getTime();
+			return { start, end };
+		}
+		if (v === 'yesterday') {
+			const start = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() - 1, 0, 0, 0, 0).getTime();
+			const end = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() - 1, 23, 59, 59, 999).getTime();
+			return { start, end };
+		}
+
+		const relMatch = v.match(/^(\d+(?:\.\d+)?)(m|h|d|w|y)$/);
+		if (relMatch) {
+			const amount = parseFloat(relMatch[1]);
+			if (!isFinite(amount) || amount < 0) return null;
+			const unitMs = {
+				m: 60 * 1000,
+				h: 60 * 60 * 1000,
+				d: 24 * 60 * 60 * 1000,
+				w: 7 * 24 * 60 * 60 * 1000,
+				y: 365 * 24 * 60 * 60 * 1000
+			}[relMatch[2]];
+			const cutoff = nowMs - amount * unitMs;
+			return { start: cutoff, end: cutoff };
+		}
+
+		const yearMatch = v.match(/^(\d{4})$/);
+		if (yearMatch) {
+			const year = parseInt(yearMatch[1], 10);
+			const start = new Date(year, 0, 1, 0, 0, 0, 0).getTime();
+			const end = new Date(year + 1, 0, 1, 0, 0, 0, 0).getTime() - 1;
+			return { start, end };
+		}
+
+		const ymMatch = v.match(/^(\d{4})[-/](\d{1,2})$/);
+		if (ymMatch) {
+			const year = parseInt(ymMatch[1], 10);
+			const month = parseInt(ymMatch[2], 10);
+			if (month < 1 || month > 12) return null;
+			const start = new Date(year, month - 1, 1, 0, 0, 0, 0).getTime();
+			const end = new Date(year, month, 1, 0, 0, 0, 0).getTime() - 1;
+			return { start, end };
+		}
+
+		const ymdMatch = v.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[t_](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+		if (ymdMatch) {
+			const year = parseInt(ymdMatch[1], 10);
+			const month = parseInt(ymdMatch[2], 10);
+			const day = parseInt(ymdMatch[3], 10);
+			if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+			const hasTime = ymdMatch[4] !== undefined;
+			const hour = hasTime ? parseInt(ymdMatch[4], 10) : 0;
+			const minute = hasTime ? parseInt(ymdMatch[5], 10) : 0;
+			const hasSec = ymdMatch[6] !== undefined;
+			const second = hasSec ? parseInt(ymdMatch[6], 10) : 0;
+			if (hour > 23 || minute > 59 || second > 59) return null;
+
+			const check = new Date(year, month - 1, day, hour, minute, second, 0);
+			if (check.getFullYear() !== year || check.getMonth() !== month - 1 || check.getDate() !== day) {
+				return null;
+			}
+			const start = check.getTime();
+			let end;
+			if (!hasTime) {
+				end = new Date(year, month - 1, day, 23, 59, 59, 999).getTime();
+			} else if (!hasSec) {
+				end = new Date(year, month - 1, day, hour, minute, 59, 999).getTime();
+			} else {
+				end = new Date(year, month - 1, day, hour, minute, second, 999).getTime();
+			}
+			return { start, end };
+		}
+
+		return null;
+	}
+
+	function parseSearchQuery(query, nowMs = Date.now()) {
+		const tokens = tokenizeSearch(query);
+		const keywords = [];
+		const sizePredicates = [];
+		const datePredicates = [];
+
+		for (const tok of tokens) {
+			if (!tok.quoted) {
+				const sizeMatch = tok.text.match(/^size(<=|>=|<|>|=)(.*)$/i);
+				if (sizeMatch) {
+					const bytes = parseSizeBytes(sizeMatch[2]);
+					if (bytes !== null) {
+						sizePredicates.push({ op: sizeMatch[1], value: bytes });
+					}
+					continue;
+				}
+				const dateMatch = tok.text.match(/^date(<=|>=|<|>|=)(.*)$/i);
+				if (dateMatch) {
+					const range = parseDateSpec(dateMatch[2], nowMs);
+					if (range !== null) {
+						datePredicates.push({ op: dateMatch[1], start: range.start, end: range.end });
+					}
+					continue;
+				}
+			}
+			keywords.push(tok.text.toLowerCase());
+		}
+
+		return { keywords, sizePredicates, datePredicates };
+	}
+
+	function filterFiles(files, query, nowMs = Date.now()) {
+		const parsed = parseSearchQuery(query, nowMs);
+		if (
+			parsed.keywords.length === 0 &&
+			parsed.sizePredicates.length === 0 &&
+			parsed.datePredicates.length === 0
+		) {
+			return [...files];
+		}
+
+		return files.filter(file => {
+			const lowerPath = String(file.path || '').toLowerCase();
+			for (const kw of parsed.keywords) {
+				if (!lowerPath.includes(kw)) return false;
+			}
+
+			if (parsed.sizePredicates.length > 0) {
+				const len = Number(file.length) || 0;
+				for (const pred of parsed.sizePredicates) {
+					if (pred.op === '<' && !(len < pred.value)) return false;
+					if (pred.op === '<=' && !(len <= pred.value)) return false;
+					if (pred.op === '>' && !(len > pred.value)) return false;
+					if (pred.op === '>=' && !(len >= pred.value)) return false;
+					if (pred.op === '=' && !(len === pred.value)) return false;
+				}
+			}
+
+			if (parsed.datePredicates.length > 0) {
+				const ts = Number(file.lastModified) || 0;
+				if (ts <= 0) return false;
+				for (const pred of parsed.datePredicates) {
+					if (pred.op === '<' && !(ts < pred.start)) return false;
+					if (pred.op === '<=' && !(ts <= pred.end)) return false;
+					if (pred.op === '>' && !(ts > pred.end)) return false;
+					if (pred.op === '>=' && !(ts >= pred.start)) return false;
+					if (pred.op === '=' && !(ts >= pred.start && ts <= pred.end)) return false;
+				}
+			}
+
+			return true;
+		});
+	}
+
+	function saveSessionState() {
+		try {
+			const searchInput = document.getElementById('searchInput');
+			const state = {
+				packSignature,
+				query: searchInput ? searchInput.value : '',
+				lastViewedPath,
+				dirScrollTop
+			};
+			sessionStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(state));
+		} catch (_) {
+		}
+	}
+
+	function loadSessionState() {
+		try {
+			const raw = sessionStorage.getItem(STATE_STORAGE_KEY);
+			if (!raw) return null;
+			const parsed = JSON.parse(raw);
+			if (!parsed || parsed.packSignature !== packSignature) {
+				sessionStorage.removeItem(STATE_STORAGE_KEY);
+				return null;
+			}
+			return parsed;
+		} catch (_) {
+			return null;
+		}
+	}
+
+	function setActivePane(view) {
+		currentView = view;
+		const panes = {
+			loading: document.getElementById('loadingView'),
+			choice: document.getElementById('choiceView'),
+			directory: document.getElementById('directoryView'),
+			slideshow: document.getElementById('slideshowView')
+		};
+		for (const [key, el] of Object.entries(panes)) {
+			if (el) el.classList.toggle('active', key === view);
+		}
+	}
+
+	function updateSearchClearButton() {
+		const searchInput = document.getElementById('searchInput');
+		const clearBtn = document.getElementById('searchClearBtn');
+		if (!searchInput || !clearBtn) return;
+		clearBtn.classList.toggle('visible', searchInput.value.length > 0);
+	}
+
+	function renderDirectoryList() {
+		const listContainer = document.getElementById('fileList');
+		const searchInput = document.getElementById('searchInput');
+		const countBadge = document.getElementById('dirCountBadge');
+		const query = searchInput ? searchInput.value : '';
+
+		updateSearchClearButton();
+		filteredFiles = filterFiles(allFiles, query);
+
+		if (countBadge) {
+			if (query.trim().length > 0) {
+				countBadge.textContent = `${filteredFiles.length} / ${allFiles.length}`;
+			} else {
+				countBadge.textContent = allFiles.length === 1 ? '1 file' : `${allFiles.length} files`;
+			}
+		}
+
+		listContainer.innerHTML = '';
+
+		if (allFiles.length === 0) {
+			listContainer.innerHTML = '<li class="empty-filter-state">Archive is empty.</li>';
+			return;
+		}
+
+		if (filteredFiles.length === 0) {
+			const emptyLi = document.createElement('li');
+			emptyLi.className = 'empty-filter-state';
+			emptyLi.innerHTML = '<span>No files match your filter.</span>';
+			const clearBtn = document.createElement('button');
+			clearBtn.type = 'button';
+			clearBtn.className = 'header-btn primary';
+			clearBtn.textContent = 'Clear filter';
+			clearBtn.onclick = () => {
+				if (searchInput) {
+					searchInput.value = '';
+					saveSessionState();
+					renderDirectoryList();
+					searchInput.focus();
+				}
+			};
+			emptyLi.appendChild(clearBtn);
+			listContainer.appendChild(emptyLi);
+			return;
+		}
+
+		let currentCardEl = null;
+		const frag = document.createDocumentFragment();
+
+		filteredFiles.forEach((file, filteredIdx) => {
+			const mType = getMediaType(file);
+			const isCurrent = lastViewedPath !== null && file.path === lastViewedPath;
+
+			const li = document.createElement('li');
+			li.className = `file-card${isCurrent ? ' current' : ''}`;
+
+			const mainDiv = document.createElement('div');
+			mainDiv.className = 'file-card-main';
+			mainDiv.innerHTML = `
+				<span class="file-item-type type-${escHtml(mType)}">${escHtml(mType)}</span>
+				<div class="file-item-name">${escHtml(file.path)}</div>
+			`;
+
+			const metaDiv = document.createElement('div');
+			metaDiv.className = 'file-card-meta';
+
+			const stackDiv = document.createElement('div');
+			stackDiv.className = 'file-meta-stack';
+			stackDiv.innerHTML = `
+				<span class="file-meta-size">${escHtml(formatBytes(file.length))}</span>
+				<span class="file-meta-date">${escHtml(formatCompactDate(file.lastModified))}</span>
+			`;
+
+			const rawBtn = document.createElement('button');
+			rawBtn.type = 'button';
+			rawBtn.className = 'file-item-raw-btn';
+			rawBtn.title = `View Raw: ${file.path}`;
+			rawBtn.innerHTML = `
+				<svg viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+				<span>Raw</span>
+			`;
+			rawBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				dirScrollTop = listContainer.scrollTop;
+				lastViewedPath = file.path;
+				saveSessionState();
+				window.location.href = encodePathSegments(file.path);
+			});
+
+			metaDiv.appendChild(stackDiv);
+			metaDiv.appendChild(rawBtn);
+			li.appendChild(mainDiv);
+			li.appendChild(metaDiv);
+
+			li.addEventListener('click', () => {
+				openSlideshowFromDirectory(filteredIdx);
+			});
+
+			if (isCurrent) {
+				currentCardEl = li;
+			}
+			frag.appendChild(li);
+		});
+
+		listContainer.appendChild(frag);
+		if (dirScrollTop > 0) {
+			listContainer.scrollTop = dirScrollTop;
+		} else if (currentCardEl) {
+			currentCardEl.scrollIntoView({ block: 'nearest' });
+		}
+	}
+
+	function openWebsiteEntry() {
+		if (!websiteEntry) return;
+		if (currentView === 'directory') {
+			const listContainer = document.getElementById('fileList');
+			if (listContainer) dirScrollTop = listContainer.scrollTop;
+			saveSessionState();
+		}
+		window.location.href = encodePathSegments(websiteEntry);
+	}
+
+	function showChoiceView({ replaceHistory = false } = {}) {
+		stopCurrentMedia();
+		if (replaceHistory) {
+			history.replaceState({ packViewer: true, view: 'choice' }, '');
+		}
+		document.getElementById('choicePackTitle').textContent = packName;
+		const totalSize = allFiles.reduce((sum, f) => sum + (Number(f.length) || 0), 0);
+		const fileWord = allFiles.length === 1 ? 'file' : 'files';
+		document.getElementById('choiceStats').textContent = `${allFiles.length} ${fileWord} • ${formatBytes(totalSize)}`;
+		document.getElementById('choiceWebsiteDesc').textContent = `Open ${websiteEntry}`;
+		setActivePane('choice');
+	}
+
+	function openDirectoryView({ pushHistory = false, replaceHistory = false } = {}) {
+		stopCurrentMedia();
+		if (pushHistory) {
+			history.pushState({ packViewer: true, view: 'directory' }, '');
+		} else if (replaceHistory) {
+			history.replaceState({ packViewer: true, view: 'directory' }, '');
+		}
+		document.getElementById('dirTitle').textContent = packName;
+		const websiteBtn = document.getElementById('dirWebsiteBtn');
+		if (websiteBtn) {
+			websiteBtn.style.display = websiteEntry ? 'inline-flex' : 'none';
+		}
+		setActivePane('directory');
+		renderDirectoryList();
+	}
+
+	function openSlideshowFromDirectory(filteredIdx) {
+		const listContainer = document.getElementById('fileList');
+		if (listContainer) {
+			dirScrollTop = listContainer.scrollTop;
+		}
+		slideshowFiles = [...filteredFiles];
+		if (slideshowFiles.length === 0) return;
+		const safeIdx = Math.max(0, Math.min(filteredIdx, slideshowFiles.length - 1));
+		const item = slideshowFiles[safeIdx];
+		lastViewedPath = item.path;
+		saveSessionState();
+
+		history.pushState({
+			packViewer: true,
+			view: 'slideshow',
+			canPopToDir: true,
+			index: safeIdx,
+			itemPath: item.path
+		}, '');
+
+		setActivePane('slideshow');
+		loadItem(safeIdx, { syncHistory: false });
+	}
+
+	function goBackToDirectory() {
+		if (history.state && history.state.view === 'slideshow' && history.state.canPopToDir) {
+			history.back();
+		} else {
+			openDirectoryView({ replaceHistory: true });
+		}
 	}
 
 	function stopCurrentMedia() {
 		stopStaticTimer();
 		if (currentMediaElement) {
 			currentMediaElement.pause?.();
-			currentMediaElement.src = '';
+			currentMediaElement.removeAttribute('src');
+			currentMediaElement.load?.();
 			currentMediaElement = null;
+		}
+		const stage = document.getElementById('stage');
+		if (stage) {
+			stage.innerHTML = '';
 		}
 	}
 
@@ -900,19 +1891,21 @@
 			cancelAnimationFrame(timerAnimFrame);
 			timerAnimFrame = null;
 		}
-		document.getElementById('progressBar').style.width = '0%';
-		document.getElementById('timerStatus').textContent = '';
+		const progressBar = document.getElementById('progressBar');
+		const timerStatus = document.getElementById('timerStatus');
+		if (progressBar) progressBar.style.width = '0%';
+		if (timerStatus) timerStatus.textContent = '';
 	}
 
 	function startStaticTimer(duration) {
 		stopStaticTimer();
-		if (!isAutoPlay) return;
+		if (!isAutoPlay || currentView !== 'slideshow') return;
 
 		timerRemaining = duration;
 		timerStartTime = performance.now();
 
 		function step(now) {
-			if (!isAutoPlay) return;
+			if (!isAutoPlay || currentView !== 'slideshow') return;
 			const elapsed = now - timerStartTime;
 			const remaining = Math.max(0, timerRemaining - elapsed);
 			const progress = Math.min(100, ((duration - remaining) / duration) * 100);
@@ -920,7 +1913,7 @@
 			document.getElementById('timerStatus').textContent = `(${(remaining / 1000).toFixed(1)}s)`;
 			if (remaining <= 0) {
 				document.getElementById('progressBar').style.width = '100%';
-				if (isAutoPlay) nextItem();
+				if (isAutoPlay && currentView === 'slideshow') nextItem();
 			} else {
 				timerAnimFrame = requestAnimationFrame(step);
 			}
@@ -945,7 +1938,7 @@
 		const PLAY_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
 		const PAUSE_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
 		const REWIND_10_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6 0 2.97-2.16 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-1.8 11.2h-1v-4.4l-1.2.4v-.8l2.1-.8h.1v5.6zm4.8-2.8c0 1.8-.8 2.9-2 2.9s-2-1.1-2-2.9.8-2.9 2-2.9 2 1.1 2 2.9zm-1 0c0-1.3-.3-2.1-1-2.1s-1 .8-1 2.1.3 2.1 1 2.1 1-.8 1-2.1z"/></svg>`;
-		const FORWARD_10_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6 0 2.97 2.16 5.43 5 5.91v2.02c-3.95-.49-7-3.85-7-7.93 0-4.42 3.58-8 8-8zm-1.8 11.2h-1v-4.4l-1.2.4v-.8l2.1-.8h.1v5.6zm4.8-2.8c0 1.8-.8 2.9-2 2.9s-2-1.1-2-2.9.8-2.9 2-2.9 2 1.1 2 2.9zm-1 0c0-1.3-.3-2.1-1-2.1s-1 .8-1 2.1.3 2.1 1 2.1 1-.8 1-2.1z"/></svg>`;
+		const FORWARD_10_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6 0 2.97 2.16 5.43 5 5.91v2.02c-3.95-.49-7-3.85-7-7.93 0-4.42-3.58-8-8-8zm-1.8 11.2h-1v-4.4l-1.2.4v-.8l2.1-.8h.1v5.6zm4.8-2.8c0 1.8-.8 2.9-2 2.9s-2-1.1-2-2.9.8-2.9 2-2.9 2 1.1 2 2.9zm-1 0c0-1.3-.3-2.1-1-2.1s-1 .8-1 2.1.3 2.1 1 2.1 1-.8 1-2.1z"/></svg>`;
 		const RATES = [1, 1.25, 1.5, 2];
 
 		const wrapper = document.createElement('div');
@@ -1011,14 +2004,8 @@
 			}
 		};
 
-		audio.addEventListener('play', () => {
-			updatePlayState(true);
-		});
-
-		audio.addEventListener('pause', () => {
-			updatePlayState(false);
-		});
-
+		audio.addEventListener('play', () => updatePlayState(true));
+		audio.addEventListener('pause', () => updatePlayState(false));
 		audio.addEventListener('timeupdate', updateProgress);
 		audio.addEventListener('loadedmetadata', () => {
 			updateDuration();
@@ -1044,7 +2031,6 @@
 			audio.currentTime = Math.max(0, audio.currentTime - 10);
 			updateProgress();
 		};
-
 		forwardBtn.onclick = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -1052,7 +2038,6 @@
 			audio.currentTime = Math.min(maxTime, audio.currentTime + 10);
 			updateProgress();
 		};
-
 		speedBtn.onclick = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -1081,7 +2066,7 @@
 		};
 
 		seekSlider.addEventListener('pointerdown', startScrubbing);
-		seekSlider.addEventListener('touchstart', startScrubbing, {passive: true});
+		seekSlider.addEventListener('touchstart', startScrubbing, { passive: true });
 		seekSlider.addEventListener('mousedown', startScrubbing);
 		seekSlider.addEventListener('input', onSliderInput);
 		seekSlider.addEventListener('change', commitSeek);
@@ -1094,18 +2079,29 @@
 		return wrapper;
 	}
 
-	function loadItem(index) {
-		if (allFiles.length === 0) return;
-		currentIndex = index;
+	function loadItem(index, { syncHistory = true } = {}) {
+		if (slideshowFiles.length === 0) return;
+		currentIndex = ((index % slideshowFiles.length) + slideshowFiles.length) % slideshowFiles.length;
 		stopCurrentMedia();
-		if (isListView) renderFileList();
 
-		const file = allFiles[currentIndex];
+		const file = slideshowFiles[currentIndex];
+		const fileUrl = encodePathSegments(file.path);
 		const mType = getMediaType(file);
+
+		lastViewedPath = file.path;
+		saveSessionState();
+
+		if (syncHistory && currentView === 'slideshow' && history.state?.view === 'slideshow') {
+			history.replaceState({
+				...history.state,
+				index: currentIndex,
+				itemPath: file.path
+			}, '');
+		}
 
 		document.getElementById('itemTitle').textContent = file.path;
 		document.getElementById('typeBadge').textContent = mType;
-		document.getElementById('counterStatus').textContent = `${currentIndex + 1} / ${allFiles.length}`;
+		document.getElementById('counterStatus').textContent = `${currentIndex + 1} / ${slideshowFiles.length}`;
 		const rawBtn = document.getElementById('rawBtn');
 		if (rawBtn) rawBtn.title = `View Raw: ${file.path} (R)`;
 
@@ -1116,7 +2112,7 @@
 			case 'html': {
 				const iframe = document.createElement('iframe');
 				iframe.className = 'html-stage-frame';
-				iframe.src = file.path;
+				iframe.src = fileUrl;
 				stage.appendChild(iframe);
 				if (isAutoPlay) startStaticTimer(HOLD_DURATION);
 				break;
@@ -1124,11 +2120,11 @@
 			case 'video': {
 				const video = document.createElement('video');
 				video.className = 'media-element';
-				video.src = file.path;
+				video.src = fileUrl;
 				video.controls = true;
 				video.autoplay = isAutoPlay;
 				video.onended = () => {
-					if (isAutoPlay && allFiles.length > 1) {
+					if (isAutoPlay && slideshowFiles.length > 1) {
 						nextItem();
 					}
 				};
@@ -1142,12 +2138,12 @@
 			case 'audio': {
 				const card = document.createElement('div');
 				card.className = 'audio-card';
-				card.innerHTML = `<div class="audio-file-name">${file.path}</div>`;
+				card.innerHTML = `<div class="audio-file-name">${escHtml(file.path)}</div>`;
 				const audio = document.createElement('audio');
-				audio.src = file.path;
+				audio.src = fileUrl;
 				audio.autoplay = isAutoPlay;
 				audio.onended = () => {
-					if (isAutoPlay && allFiles.length > 1) {
+					if (isAutoPlay && slideshowFiles.length > 1) {
 						nextItem();
 					}
 				};
@@ -1163,7 +2159,7 @@
 			case 'image': {
 				const img = document.createElement('img');
 				img.className = 'media-element';
-				img.src = file.path;
+				img.src = fileUrl;
 				stage.appendChild(img);
 				if (isAutoPlay) startStaticTimer(HOLD_DURATION);
 				break;
@@ -1173,7 +2169,7 @@
 				viewer.className = 'text-viewer';
 				viewer.textContent = 'Loading...';
 				stage.appendChild(viewer);
-				fetch(file.path).then(res => res.text()).then(text => {
+				fetch(fileUrl).then(res => res.text()).then(text => {
 					viewer.textContent = text;
 				}).catch(err => {
 					viewer.textContent = 'Error: ' + err;
@@ -1184,7 +2180,16 @@
 			default: {
 				const infoCard = document.createElement('div');
 				infoCard.className = 'info-card';
-				infoCard.innerHTML = `<h3>${file.path}</h3><div class="info-row"><span class="info-label">Type</span><span class="info-value">${file.type || 'Unknown'}</span></div><div class="info-row"><span class="info-label">Size</span><span class="info-value">${formatBytes(file.length)}</span></div><a href="${file.path}" download class="btn-download">Download</a>`;
+				const modRow = (file.lastModified && file.lastModified > 0)
+					? `<div class="info-row"><span class="info-label">Modified</span><span class="info-value">${escHtml(formatCompactDate(file.lastModified))}</span></div>`
+					: '';
+				infoCard.innerHTML = `
+					<h3>${escHtml(file.path)}</h3>
+					<div class="info-row"><span class="info-label">Type</span><span class="info-value">${escHtml(file.type || 'Unknown')}</span></div>
+					<div class="info-row"><span class="info-label">Size</span><span class="info-value">${escHtml(formatBytes(file.length))}</span></div>
+					${modRow}
+					<a href="${escHtml(fileUrl)}" download class="btn-download">Download</a>
+				`;
 				stage.appendChild(infoCard);
 				if (isAutoPlay) startStaticTimer(HOLD_DURATION);
 				break;
@@ -1193,11 +2198,11 @@
 	}
 
 	function nextItem() {
-		if (allFiles.length > 0) loadItem((currentIndex + 1) % allFiles.length);
+		if (slideshowFiles.length > 0) loadItem((currentIndex + 1) % slideshowFiles.length);
 	}
 
 	function prevItem() {
-		if (allFiles.length > 0) loadItem((currentIndex - 1 + allFiles.length) % allFiles.length);
+		if (slideshowFiles.length > 0) loadItem((currentIndex - 1 + slideshowFiles.length) % slideshowFiles.length);
 	}
 
 	function onAutoPlayToggled() {
@@ -1205,18 +2210,16 @@
 		isAutoPlay = toggle ? toggle.checked : false;
 		updateAutoPlayToggleUI();
 
-		if (isAutoPlay) {
-			if (allFiles.length > 0) {
-				const file = allFiles[currentIndex];
-				const mType = getMediaType(file);
-				if (['html', 'image', 'text', 'binary'].includes(mType)) {
-					startStaticTimer(HOLD_DURATION);
-				} else if (currentMediaElement) {
-					if (currentMediaElement.ended) {
-						nextItem();
-					} else if (currentMediaElement.paused) {
-						currentMediaElement.play?.().catch(() => {});
-					}
+		if (isAutoPlay && currentView === 'slideshow' && slideshowFiles.length > 0) {
+			const file = slideshowFiles[currentIndex];
+			const mType = getMediaType(file);
+			if (['html', 'image', 'text', 'binary'].includes(mType)) {
+				startStaticTimer(HOLD_DURATION);
+			} else if (currentMediaElement) {
+				if (currentMediaElement.ended) {
+					nextItem();
+				} else if (currentMediaElement.paused) {
+					currentMediaElement.play?.().catch(() => {});
 				}
 			}
 		} else {
@@ -1231,22 +2234,16 @@
 			label.classList.toggle('active', isAutoPlay);
 		}
 	}
+
 	function viewRawCurrentItem() {
-		if (allFiles.length === 0 || !allFiles[currentIndex]) return;
-		const file = allFiles[currentIndex];
-		window.location.href = file.path;
+		if (slideshowFiles.length === 0 || !slideshowFiles[currentIndex]) return;
+		const file = slideshowFiles[currentIndex];
+		lastViewedPath = file.path;
+		saveSessionState();
+		window.location.href = encodePathSegments(file.path);
 	}
 
 	function onHostPause() {
-		// Play everything for now, even video
-		// if (!isPlaying) return;
-		// if (currentMediaElement) {
-		// 	if (currentMediaElement.tagName === 'VIDEO') {
-		// 		togglePlayPause();
-		// 	}
-		// } else if (timerAnimFrame) {
-		// 	togglePlayPause();
-		// }
 	}
 
 	window.onHostPause = onHostPause;
@@ -1257,8 +2254,55 @@
 		}
 	});
 
+	window.addEventListener('popstate', (e) => {
+		if (allFiles.length === 0) return;
+		const st = e.state;
+		if (!st || !st.packViewer) return;
+
+		if (st.view === 'choice' && websiteEntry) {
+			showChoiceView();
+		} else if (st.view === 'directory') {
+			openDirectoryView();
+		} else if (st.view === 'slideshow') {
+			slideshowFiles = [...filteredFiles];
+			if (slideshowFiles.length === 0) {
+				slideshowFiles = [...allFiles];
+			}
+			let idx = typeof st.index === 'number' ? st.index : 0;
+			if (st.itemPath) {
+				const foundIdx = slideshowFiles.findIndex(f => f.path === st.itemPath);
+				if (foundIdx >= 0) idx = foundIdx;
+			}
+			idx = Math.max(0, Math.min(idx, slideshowFiles.length - 1));
+			setActivePane('slideshow');
+			loadItem(idx, { syncHistory: false });
+		}
+	});
+
 	document.addEventListener('keydown', (e) => {
-		if (e.target.tagName === 'INPUT') return;
+		const targetIsInput = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+
+		if (currentView === 'directory') {
+			const searchInput = document.getElementById('searchInput');
+			if (!targetIsInput && e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+				e.preventDefault();
+				searchInput?.focus();
+			} else if (e.code === 'Escape' && searchInput) {
+				if (searchInput.value.length > 0) {
+					e.preventDefault();
+					searchInput.value = '';
+					dirScrollTop = 0;
+					saveSessionState();
+					renderDirectoryList();
+				} else if (targetIsInput) {
+					searchInput.blur();
+				}
+			}
+			return;
+		}
+
+		if (currentView !== 'slideshow' || targetIsInput) return;
+
 		if (e.code === 'Space') {
 			e.preventDefault();
 			const toggle = document.getElementById('autoPlayToggle');
@@ -1275,35 +2319,128 @@
 		} else if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey && !e.altKey) {
 			e.preventDefault();
 			viewRawCurrentItem();
+		} else if (e.code === 'Escape') {
+			e.preventDefault();
+			goBackToDirectory();
 		}
 	});
 
+	document.getElementById('choiceWebsiteBtn').onclick = openWebsiteEntry;
+	document.getElementById('choiceDirectoryBtn').onclick = () => {
+		dirScrollTop = 0;
+		openDirectoryView({ pushHistory: true });
+	};
+	document.getElementById('dirWebsiteBtn').onclick = openWebsiteEntry;
+	document.getElementById('backToDirBtn').onclick = goBackToDirectory;
 	document.getElementById('autoPlayToggle').onchange = onAutoPlayToggled;
 	document.getElementById('nextBtn').onclick = nextItem;
 	document.getElementById('prevBtn').onclick = prevItem;
 	document.getElementById('rawBtn').onclick = viewRawCurrentItem;
-	document.getElementById('listToggleBtn').onclick = toggleView;
-	document.getElementById('searchInput').oninput = renderFileList;
+
+	document.getElementById('searchInput').addEventListener('input', () => {
+		dirScrollTop = 0;
+		saveSessionState();
+		renderDirectoryList();
+	});
+
+	document.getElementById('searchClearBtn').addEventListener('click', () => {
+		const searchInput = document.getElementById('searchInput');
+		if (!searchInput) return;
+		searchInput.value = '';
+		dirScrollTop = 0;
+		saveSessionState();
+		renderDirectoryList();
+		searchInput.focus();
+	});
+
+	document.getElementById('searchHelpBtn').addEventListener('click', () => {
+		const btn = document.getElementById('searchHelpBtn');
+		const hint = document.getElementById('searchHelpHint');
+		const active = hint.classList.toggle('visible');
+		btn.classList.toggle('active', active);
+	});
 
 	async function init() {
 		isAutoPlay = false;
 		const toggle = document.getElementById('autoPlayToggle');
-		if (toggle) {
-			toggle.checked = false;
-		}
+		if (toggle) toggle.checked = false;
 		updateAutoPlayToggleUI();
 
 		try {
-			const res = await fetch('pack_list');
-			if (!res.ok) throw new Error('Failed to fetch content list');
-			allFiles = await res.json();
+			const [listRes, infoRes] = await Promise.all([
+				fetch('pack_list'),
+				fetch('__pack_viewer_info__').catch(() => null)
+			]);
+			if (!listRes.ok) throw new Error('Failed to fetch content list');
+
+			allFiles = await listRes.json();
+			if (infoRes && infoRes.ok) {
+				try {
+					const info = await infoRes.json();
+					if (info && info.name) {
+						packName = String(info.name);
+					}
+				} catch (_) {
+				}
+			}
+			document.title = packName;
+
 			if (allFiles.length === 0) {
-				document.getElementById('stage').innerHTML = `<div class="center-msg">Archive is empty.</div>`;
+				document.getElementById('loadingMsg').textContent = 'Archive is empty.';
+				setActivePane('loading');
 				return;
 			}
-			loadItem(0);
+
+			packSignature = `${packName}:${allFiles.length}:${allFiles[0]?.path || ''}`;
+			websiteEntry = detectWebsiteEntry(allFiles);
+
+			const saved = loadSessionState();
+			if (saved) {
+				const searchInput = document.getElementById('searchInput');
+				if (searchInput && typeof saved.query === 'string') {
+					searchInput.value = saved.query;
+				}
+				if (typeof saved.lastViewedPath === 'string') {
+					lastViewedPath = saved.lastViewedPath;
+				}
+				if (typeof saved.dirScrollTop === 'number' && isFinite(saved.dirScrollTop)) {
+					dirScrollTop = saved.dirScrollTop;
+				}
+			}
+
+			const searchInput = document.getElementById('searchInput');
+			filteredFiles = filterFiles(allFiles, searchInput ? searchInput.value : '');
+
+			const histState = history.state;
+			if (histState && histState.packViewer) {
+				if (histState.view === 'slideshow') {
+					slideshowFiles = filteredFiles.length > 0 ? [...filteredFiles] : [...allFiles];
+					let idx = typeof histState.index === 'number' ? histState.index : 0;
+					if (histState.itemPath) {
+						const foundIdx = slideshowFiles.findIndex(f => f.path === histState.itemPath);
+						if (foundIdx >= 0) idx = foundIdx;
+					}
+					idx = Math.max(0, Math.min(idx, slideshowFiles.length - 1));
+					setActivePane('slideshow');
+					loadItem(idx, { syncHistory: false });
+					return;
+				}
+				if (histState.view === 'directory') {
+					openDirectoryView();
+					return;
+				}
+			}
+
+			if (websiteEntry) {
+				showChoiceView({ replaceHistory: true });
+			} else {
+				openDirectoryView({ replaceHistory: true });
+			}
 		} catch (err) {
-			document.getElementById('stage').innerHTML = `<div class="center-msg" style="color: #ef4444;">Error: ${err.message}</div>`;
+			const msg = document.getElementById('loadingMsg');
+			msg.style.color = '#ef4444';
+			msg.textContent = `Error: ${err.message}`;
+			setActivePane('loading');
 		}
 	}
 

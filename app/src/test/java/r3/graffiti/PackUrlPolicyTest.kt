@@ -50,6 +50,22 @@ class PackUrlPolicyTest {
 	}
 
 	@Test
+	fun detectsPackViewerUrlsOnlyOnMatchingLoopbackAndPath() {
+		assertTrue(PackUrlPolicy.isPackViewerUrl("http://localhost:12345/__pack_viewer__", 12345))
+		assertTrue(PackUrlPolicy.isPackViewerUrl("http://127.0.0.1:12345/__pack_viewer__?q=1#top", 12345))
+		assertTrue(PackUrlPolicy.isPackViewerUrl("http://[::1]:12345/__pack_viewer__", 12345))
+
+		assertFalse(PackUrlPolicy.isPackViewerUrl("http://localhost:12345/", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl("http://localhost:12345/index.html", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl("http://localhost:12345/__pack_viewer__/sub", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl("http://localhost:9999/__pack_viewer__", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl("http://example.com:12345/__pack_viewer__", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl("about:blank", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl("data:text/html,hi", 12345))
+		assertFalse(PackUrlPolicy.isPackViewerUrl(null, 12345))
+	}
+
+	@Test
 	fun openableExternalUrlAllowsOnlySafeSchemes() {
 		assertTrue(PackUrlPolicy.isOpenableExternalUrl("https://example.com/page"))
 		assertTrue(PackUrlPolicy.isOpenableExternalUrl("http://example.com"))

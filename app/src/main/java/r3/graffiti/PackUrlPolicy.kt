@@ -32,6 +32,21 @@ object PackUrlPolicy {
 		}
 	}
 
+	fun isPackViewerUrl(
+		url: String?,
+		allowedPort: Int,
+		viewerPath: String = "/__pack_viewer__"
+	): Boolean {
+		if (!isInternalPackUrl(url, allowedPort)) return false
+		val trimmed = url!!.trim()
+		if (!trimmed.lowercase().startsWith("http:")) return false
+		return try {
+			URI(trimmed).path == viewerPath
+		} catch (_: Exception) {
+			false
+		}
+	}
+
 	fun isOpenableExternalUrl(url: String?): Boolean {
 		if (url.isNullOrBlank()) return false
 		val trimmed = url.trim()

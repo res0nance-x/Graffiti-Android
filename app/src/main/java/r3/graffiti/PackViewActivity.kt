@@ -251,7 +251,14 @@ class PackViewActivity : ComponentActivity() {
 
 				override fun onPageFinished(view: WebView?, url: String?) {
 					super.onPageFinished(view, url)
-					applyPageEnhancements()
+					if (!PackUrlPolicy.isPackViewerUrl(
+							url,
+							PackHolder.listeningPort,
+							PackMediaPlaybackService.PACK_VIEWER_PATH
+						)
+					) {
+						applyPageEnhancements()
+					}
 					view?.evaluateJavascript(
 						BackgroundMediaWebView.buildMediaTrackerJs(PACK_MEDIA_BRIDGE_NAME),
 						null
@@ -431,8 +438,10 @@ class PackViewActivity : ComponentActivity() {
 			if (port != 0) {
 				loadingLayout.visibility = View.GONE
 				webView.visibility = View.VISIBLE
-				if (webView.url != "http://localhost:$port/") {
-					webView.loadUrl("http://localhost:$port/")
+				val viewerUrl = "http://localhost:$port${PackMediaPlaybackService.PACK_VIEWER_PATH}"
+				val currentUrl = webView.url
+				if (currentUrl.isNullOrEmpty() || currentUrl == "about:blank" || !PackUrlPolicy.isInternalPackUrl(currentUrl, port)) {
+					webView.loadUrl(viewerUrl)
 				}
 			} else {
 				loadingLayout.visibility = View.GONE
@@ -501,7 +510,7 @@ class PackViewActivity : ComponentActivity() {
 					errorLayout.visibility = View.GONE
 					webView.apply {
 						visibility = View.VISIBLE
-						loadUrl("http://localhost:$listeningPort/")
+						loadUrl("http://localhost:$listeningPort${PackMediaPlaybackService.PACK_VIEWER_PATH}")
 					}
 				} else {
 					loadingLayout.visibility = View.GONE
@@ -622,6 +631,7 @@ class PackViewActivity : ComponentActivity() {
 	private fun applyPageEnhancements() {
 		val safeLayoutJs = """
 			(function() {
+				if (document.querySelector('meta[name="graffiti-pack-viewer"]')) return;
 				if (!document.querySelector('meta[name="viewport"]')) {
 					const meta = document.createElement('meta');
 					meta.name = 'viewport';
@@ -654,6 +664,7 @@ class PackViewActivity : ComponentActivity() {
 	private fun applyFitModeCss() {
 		val js = """
 			(function() {
+				if (document.querySelector('meta[name="graffiti-pack-viewer"]')) return;
 				let el = document.getElementById('graffiti-reflow-style');
 				if (!el) {
 					el = document.createElement('style');
@@ -688,6 +699,7 @@ class PackViewActivity : ComponentActivity() {
 		if (isDarkMode) {
 			val js = """
 			(function() {
+				if (document.querySelector('meta[name="graffiti-pack-viewer"]')) return;
 				let el = document.getElementById('graffiti-dark-style');
 				if (!el) {
 					el = document.createElement('style');
