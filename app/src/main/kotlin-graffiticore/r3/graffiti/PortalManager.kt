@@ -1,5 +1,6 @@
 package r3.graffiti
 
+import r3.content.Content
 import r3.content.ContentMeta
 import r3.http.resolveFile
 import r3.io.consistentPath
@@ -7,12 +8,15 @@ import r3.io.debug
 import r3.io.getExtension
 import r3.io.makeRelativePath
 import r3.io.serialize
+import r3.io.skipFullBytes
 import r3.io.toDataInputStream
 import r3.net.tcp.TCPInputStream
 import r3.net.tcp.TCPNode
 import r3.net.tcp.TCPPack
 import r3.net.tcp.TCPPackClient
+import r3.pack.BinaryPack
 import r3.pke.name
+import r3.source.FileSource
 import r3.source.ListWritable
 import java.io.File
 import java.io.RandomAccessFile
@@ -24,6 +28,18 @@ class PortalManager(
 	private val p2p: GraffitiP2P,
 	private val requestTracker: NodeRequestTracker
 ) {
+	private data class CachedPortalPack(
+		val canonicalPath: String,
+		val length: Long,
+		val lastModified: Long,
+		val metaList: List<ContentMeta>,
+		val contentByPath: Map<String, Content>
+	)
+
+	private val packCacheLock = Any()
+
+	@Volatile
+	private var cachedPortalPack: CachedPortalPack? = null
 	private fun generateDefaultPortalHtml(): ByteArray {
 		val nodeName = p2p.serverIdentity.key.name
 		val html = """
@@ -89,7 +105,7 @@ class PortalManager(
 					<h1>$nodeName's Portal</h1>
 					<p>This node has not customized their portal yet.</p>
 					<div class="hint">
-						To customize your portal, add media files or an <code>index.html</code> web app to your node's Portal folder.
+						To customize your portal, add media files, a <code>.pack</code> archive, or an <code>index.html</code> web app to your node's Portal folder.
 					</div>
 				</div>
 			</body>
@@ -109,11 +125,89 @@ class PortalManager(
 		return file.isFile && !file.name.startsWith(".")
 	}
 
+	private fun resolveSingleBinaryPack(portalDir: File): CachedPortalPack? {
+		val visibleEntries = portalDir.listFiles()?.filter { !it.name.startsWith(".") } ?: emptyList()
+		val candidate = if (visibleEntries.size == 1) visibleEntries[0] else null
+		if (candidate == null || !candidate.isFile || !candidate.name.endsWith(".pack", ignoreCase = true)) {
+			if (cachedPortalPack != null) {
+				synchronized(packCacheLock) { cachedPortalPack = null }
+			}
+			return null
+		}
+
+		val canonicalPath = candidate.canonicalPath
+		val len = candidate.length()
+		val mtime = candidate.lastModified()
+		val existing = cachedPortalPack
+		if (existing != null &&
+			existing.canonicalPath == canonicalPath &&
+			existing.length == len &&
+			existing.lastModified == mtime
+		) {
+			return existing
+		}
+
+		return synchronized(packCacheLock) {
+			val lockedExisting = cachedPortalPack
+			if (lockedExisting != null &&
+				lockedExisting.canonicalPath == canonicalPath &&
+				lockedExisting.length == len &&
+				lockedExisting.lastModified == mtime
+			) {
+				return@synchronized lockedExisting
+			}
+
+			val source = FileSource(candidate)
+			if (!BinaryPack.isNewFormat(source)) {
+				cachedPortalPack = null
+				return@synchronized null
+			}
+
+			val contentByPath = LinkedHashMap<String, Content>()
+			try {
+				val pack = BinaryPack(source)
+				for (item in pack) {
+					val normPath = item.path.replace('\\', '/').trimStart('/')
+					if (normPath.isNotEmpty()) {
+						contentByPath[normPath] = item
+					}
+				}
+			} catch (_: Exception) {
+				cachedPortalPack = null
+				return@synchronized null
+			}
+
+			if (contentByPath.isEmpty()) {
+				cachedPortalPack = null
+				return@synchronized null
+			}
+
+			val metaList = contentByPath.entries.map { (normPath, item) ->
+				ContentMeta(
+					name = normPath,
+					type = item.ext.ifEmpty { getExtension(normPath) },
+					length = item.length,
+					created = item.lastModified
+				)
+			}.sortedBy { it.name }
+
+			CachedPortalPack(
+				canonicalPath = canonicalPath,
+				length = len,
+				lastModified = mtime,
+				metaList = metaList,
+				contentByPath = contentByPath
+			).also { cachedPortalPack = it }
+		}
+	}
+
 	fun getLocalPortalMetaList(): List<ContentMeta> {
 		val portalDir = p2p.portalDir
 		if (!portalDir.exists()) {
 			portalDir.mkdirs()
 		}
+		resolveSingleBinaryPack(portalDir)?.let { return it.metaList }
+
 		val files = portalDir.walkTopDown()
 			.onEnter { dir -> dir == portalDir || !dir.name.startsWith(".") }
 			.filter { it.isFile && !it.name.startsWith(".") }
@@ -139,7 +233,27 @@ class PortalManager(
 		if (!portalDir.exists()) {
 			portalDir.mkdirs()
 		}
-		val cleanRel = path.trimStart('/', '\\')
+		val cleanRel = path.replace('\\', '/').trimStart('/')
+		val singlePack = resolveSingleBinaryPack(portalDir)
+		if (singlePack != null) {
+			val entry = singlePack.contentByPath[cleanRel] ?: singlePack.contentByPath[path] ?: return null
+			if (pos >= entry.length) return ByteArray(0)
+			val toRead = minOf(cappedMax.toLong(), entry.length - pos).toInt()
+			val buf = ByteArray(toRead)
+			entry.createInputStream().use { stream ->
+				if (pos > 0L) {
+					stream.skipFullBytes(pos)
+				}
+				var totalRead = 0
+				while (totalRead < toRead) {
+					val r = stream.read(buf, totalRead, toRead - totalRead)
+					if (r <= 0) break
+					totalRead += r
+				}
+				return if (totalRead == toRead) buf else buf.copyOf(totalRead)
+			}
+		}
+
 		val targetFile = try {
 			resolveFile(portalDir, cleanRel)
 		} catch (_: Exception) {
